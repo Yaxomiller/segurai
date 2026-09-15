@@ -193,6 +193,16 @@ class Store:
         rows = self._read("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
         return _row_to_session(rows[0]) if rows else None
 
+    def sessions_since(self, since: datetime) -> list[SessionRow]:
+        """Every session that started at or after ``since``, oldest first.
+
+        Timestamps are stored as UTC ISO text, which sorts in time order, so
+        the database can compare them directly.
+        """
+        rows = self._read("SELECT * FROM sessions WHERE started_at >= ? ORDER BY started_at",
+                          (since.isoformat(),))
+        return [_row_to_session(r) for r in rows]
+
     def sessions(self, limit: int = 50) -> list[SessionRow]:
         rows = self._read("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,))
         return [_row_to_session(r) for r in rows]

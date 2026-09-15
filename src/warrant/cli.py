@@ -4,6 +4,7 @@
     warrant show <session_id>        render the delegation tree
     warrant verify <session_id>      check every chain in a session
     warrant creep <session_id>       granted vs exercised scope
+    warrant report                   scope-creep report across sessions (M6)
     warrant keygen                   create a signing key
     warrant collect                  receive spans from agents over OTLP/HTTP
     warrant ui                       browse sessions in a web page
@@ -139,6 +140,30 @@ def cmd_creep(args: argparse.Namespace) -> int:
         pct = 100 * len(unused_ops) / max(len(granted_ops), 1)
         print(f"\n  {len(unused_ops)} of {len(granted_ops)} granted operations "
               f"({pct:.0f}%) went unused in this session.")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Scope-creep report: granted versus used permissions over a window."""
+    from datetime import timedelta
+
+    from .models import utcnow
+    from .report import build_report, load_grants
+
+    store = _store(args)
+    grants = load_grants(args.grants) if args.grants else []
+    until = utcnow()
+    report = build_report(store, since=until - timedelta(days=args.days), until=until, grants=grants)
+    render = {"md": report.to_markdown, "html": report.to_html,
+              "json": report.to_json, "csv": report.to_csv}[args.format]
+    text = render()
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.format} report to {args.out}: {report.unused_permissions} of "
+              f"{report.granted_permissions} granted permissions unused across "
+              f"{len(report.identities)} identities.")
+    else:
+        print(text)
     return 0
 
 
@@ -381,6 +406,14 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("creep", help="granted vs exercised scope")
     s.add_argument("session_id")
     s.set_defaults(func=cmd_creep)
+
+    s = sub.add_parser("report", help="scope-creep report: granted versus used permissions")
+    s.add_argument("--days", type=int, default=30, help="observation window in days (default: 30)")
+    s.add_argument("--grants", default=None,
+                   help="JSON file of standing permissions exported from an identity provider")
+    s.add_argument("--format", default="md", choices=["md", "html", "json", "csv"])
+    s.add_argument("--out", default=None, help="write the report here instead of printing it")
+    s.set_defaults(func=cmd_report)
 
     s = sub.add_parser("keygen", help="create a signing key")
     s.add_argument("--force", action="store_true", help="replace an existing key")

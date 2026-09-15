@@ -171,6 +171,21 @@ The model's output is treated as untrusted. It can only ever *narrow* the person
 
 ---
 
+## The scope-creep report
+
+[`report.py`](../src/warrant/report.py) turns a window of recorded activity into least-privilege advice. For every identity (each agent by name, and each person's session root) it compares what was **granted**, from warrants or from a grants file exported from an identity provider, with what was **used**: actions that actually happened. Blocked attempts are listed separately, because they never happened.
+
+- operations never used, and targets never touched
+- wildcards that were only used for a few concrete resources
+- the per-action size limit against the largest change actually made
+- irreversible actions allowed but never used
+
+It proposes a tightened scope that only ever removes: operations and resources that were both granted and used; a size limit rounded up from the largest real change (x1.2, to a readable number) but never above the grant; irreversible actions only if some were used. Every line carries its evidence: sessions, actions, first and last seen, and an example action id for each operation.
+
+Observed chains (plain OpenTelemetry) grant nothing, but their actions count as use against external grants. A team can therefore see how far its agents' standing permissions exceed their real work before adopting warrants at all. Exports: Markdown, a standalone HTML page, JSON, and a CSV with one row per unused permission.
+
+---
+
 ## Signatures and keys
 
 [`authority.py`](../src/warrant/authority.py) signs each warrant with Ed25519. The signature covers every field, including the parent link and the depth, so nobody can later widen a scope, re-attach a warrant to a different parent, or reorder the chain without breaking it.
@@ -252,6 +267,7 @@ src/warrant/
   actions.py           ActionSpec: tool call → operation/resource/scale
   runtime.py           session, agent, delegate, act, tool, configure, listeners
   scenarios.py         the Tier 1 scenario suite (M2)
+  report.py            the scope-creep report (M6)
   cli.py               the `warrant` command
   _claude.py           the one structured Claude call shared by intent and judge
   collector/
@@ -293,6 +309,7 @@ tests/                 one file per area; see below
 | `test_web.py`, `test_intent_checks.py` | the web view escapes request text, shows findings and failed verification, and requires the token; compiled checks are validated against catalog evidence |
 | `test_observed.py` | ordinary OpenTelemetry GenAI spans, arriving in any order, rebuild an observed chain labeled as unchecked |
 | `test_judge.py`, `test_judge_eval.py` | which actions the judge sees and what it is shown, that verdicts never change Tier 1's record, the exact Claude request offline; the eval set and its dangerous-miss scoring |
+| `test_report.py` | unused operations, targets and wildcards with evidence; proposals that only remove; windows; blocked attempts; external grants against observed use; every export format |
 | `test_intent.py`, `test_intent_claude.py`, `test_intent_eval.py` | the catalog check and ceiling; the exact Claude API request, checked offline; the grading rules and the dataset |
 | `test_examples.py` | every example still runs |
 
@@ -304,6 +321,7 @@ tests/                 one file per area; see below
 - **The database is not tamper-evident.** Warrants are signed, so editing one is caught; but a deleted *action* row leaves no trace. A hash-chained, append-only log is planned (M7).
 - **Neither the intent compiler nor the judge has been measured live.** Both are built and tested offline. Their eval sets need an Anthropic API key to run, and both were labeled by Claude, so people should review the labels before any score is quoted.
 - **The judge's two-second latency target is unmeasured.** It can only be checked against the live API.
+- **The report sees one window.** Permissions needed only by rare jobs look unused in a short window; confidence reflects how much activity was seen, not certainty. Identity-provider grants arrive as an exported file, not through live connectors.
 - **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
 - **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition can only be weighed by the Tier 2 judge.
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.

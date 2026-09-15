@@ -1,0 +1,22 @@
+{
+  "grants": [
+    {
+      "identity": "crm_agent",
+      "source": "okta",
+      "reference": "Okta app: CRM automation (example id 0oa-example)",
+      "operations": ["read", "search", "update", "archive", "delete", "export"],
+      "targets": ["crm.*", "billing.invoices"],
+      "max_scale": null,
+      "irreversible_allowed": true
+    },
+    {
+      "identity": "support_agent",
+      "source": "mcp-token",
+      "reference": "MCP server 'helpdesk': token scopes",
+      "operations": ["read", "search", "update", "refund"],
+      "targets": ["support.*", "billing.refunds"],
+      "max_scale": 1,
+      "irreversible_allowed": true
+    }
+  ]
+}

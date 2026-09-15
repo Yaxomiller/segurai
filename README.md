@@ -47,6 +47,12 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - Verdicts sit beside Tier 1's record — advice, never authority — and agent-written text is treated as untrusted data
 - 50 labeled cases (27 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
 
+**M6 — scope-creep report: built.**
+
+- Per agent and per person, over any window: operations never used, targets never touched, wildcards that could shrink, size limits against the largest real change
+- A proposed tightened scope built only from observed use, with the evidence behind it
+- Grants from warrants or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
+
 ## Install
 
 ```bash
@@ -226,6 +232,18 @@ The collector rebuilds every chain and re-checks every signature with the organi
 
 **Already using OpenTelemetry? Try it with no code changes.** Point your existing exporter at the collector. Standard GenAI spans (`invoke_agent`, `execute_tool`) from any framework are rebuilt into an *observed* chain: which agent called which tool, and for whom. Observed chains are clearly labeled — nothing in them was authorized, signed or checked — so they show where warrants would go before you adopt them.
 
+## Scope-creep report
+
+Which permissions did we give agents that they never used?
+
+```bash
+warrant report --days 30                                   # Markdown to the terminal
+warrant report --days 30 --format csv --out unused.csv     # one row per unused permission
+warrant report --grants okta-export.json --format html --out report.html
+```
+
+For every agent, and for each person's sessions as a whole, it lists operations never used, targets never touched, wildcards that were only used for a few resources, and size limits against the largest change actually made. It then proposes a tightened scope built only from observed use (it never adds anything), with the evidence behind it. Pass `--grants` with standing permissions exported from an identity provider ([format](examples/grants.example.json)) to compare those too, including against observed chains from plain OpenTelemetry. Rarely-run work may need permissions a short window doesn't show, so every report says so and rates its confidence by how much activity it saw.
+
 ## Semantic judge (Tier 2)
 
 Tier 1 is exact but can only compare. For the actions it flags, the judge asks Claude one narrow question: given what this person asked for, is this action within intent, outside it, or does a person need to decide?
@@ -251,6 +269,7 @@ warrant sessions              # list recent sessions
 warrant show <session_id>     # render the delegation tree (--json, --ascii)
 warrant verify <session_id>   # re-check every signature, link and narrowing
 warrant creep <session_id>    # granted vs exercised scope
+warrant report --days 30      # scope-creep report across sessions
 warrant keygen                # create a signing key
 warrant collect               # receive spans from agents (OTLP/HTTP)
 warrant ui                    # browse sessions in a web page
@@ -292,7 +311,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
 | M4 | Tier 2 semantic judge — built; first live eval pending |
 | M5 | Design-partner pilots |
-| M6 | Scope-creep report |
+| M6 | Scope-creep report — built |
 
 Known limits are listed honestly at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#honest-limits-what-is-not-done-yet).
 

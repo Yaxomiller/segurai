@@ -35,6 +35,13 @@ The first public release: milestones M0 to M2, plus the intent compiler (M1).
 - `max_total` caps the records changed across a whole session.
 - 20 seeded scenarios: 10 of 10 violations caught for the right reason, 0 of 10 false positives, 0.15 ms per checked action at p99. Run them with `warrant eval-tier1`.
 
+### Scope-creep report (M6)
+
+- `warrant report` compares granted with used permissions over a window, per agent and per person's sessions: operations never used, targets never touched, wildcards used for only a few resources, size limits against the largest real change, and irreversible actions never needed.
+- Proposes a tightened scope that only ever removes, with evidence (sessions, actions, first and last seen, example action ids) and a confidence rating based on how much activity was observed.
+- Grants come from warrants or a grants file exported from an identity provider. Actions in observed chains count as use against those grants.
+- Output as Markdown, standalone HTML, JSON, or a CSV with one row per unused permission.
+
 ### Tier 2 judge (M4)
 
 - For actions Tier 1 flagged, one Claude call decides `within_intent`, `outside_intent` or `needs_human`, with a confidence, a plain reason and the clause it turns on. It is shown the request, contract, chain, action, findings and recent history.
