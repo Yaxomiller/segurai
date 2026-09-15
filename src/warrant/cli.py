@@ -39,7 +39,9 @@ def cmd_show(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(chain_summary(store, args.session_id), indent=2))
     else:
-        print(render_session(store, args.session_id, show_scopes=not args.no_scopes))
+        charset = "ascii" if args.ascii else "auto"
+        print(render_session(store, args.session_id, show_scopes=not args.no_scopes,
+                             charset=charset))
     return 0
 
 
@@ -109,7 +111,20 @@ def cmd_creep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _never_crash_on_unprintable_text() -> None:
+    """Replace characters the terminal cannot show instead of raising.
+
+    A Windows console on a legacy code page (cp1252), or output redirected to
+    a file, cannot encode every character. Without this, a request typed in
+    another language would crash ``warrant show`` halfway through the report.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _never_crash_on_unprintable_text()
     p = argparse.ArgumentParser(prog="warrant", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default="warrant.db", help="store path (default: warrant.db)")
@@ -123,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("session_id")
     s.add_argument("--json", action="store_true")
     s.add_argument("--no-scopes", action="store_true")
+    s.add_argument("--ascii", action="store_true", help="draw the tree with plain ASCII")
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("verify", help="verify the chains in a session")

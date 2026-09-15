@@ -143,3 +143,14 @@ def test_imported_warrant_still_verifies():
         token = warrant.export_warrant()
     restored = warrant.import_warrant(token)
     warrant._runtime.authority.verify(restored)  # must not raise
+
+
+def test_agent_that_only_narrows_operations_can_still_act():
+    """Regression: declaring only operations used to leave the agent no targets."""
+    @warrant.agent("reader", scope=Scope.of(operations=["read"]))
+    def reader():
+        return warrant.act("read", "crm.opportunities")
+
+    with _open():
+        rec = reader()
+        assert rec.allowed, rec.violation

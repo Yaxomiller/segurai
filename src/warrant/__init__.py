@@ -54,10 +54,14 @@ __all__ = [
 ]
 
 
-def render(session_id: str, show_scopes: bool = True) -> str:
-    """Render a session's delegation tree using the configured store."""
+def render(session_id: str, show_scopes: bool = True, charset: str = "auto") -> str:
+    """Render a session's delegation tree using the configured store.
+
+    ``charset="auto"`` draws the tree with Unicode lines when stdout can show
+    them and falls back to plain ASCII when it cannot.
+    """
     store, _ = _runtime.ensure()
-    return render_session(store, session_id, show_scopes=show_scopes)
+    return render_session(store, session_id, show_scopes=show_scopes, charset=charset)
 
 
 def summary(session_id: str) -> dict:

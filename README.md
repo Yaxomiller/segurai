@@ -86,7 +86,9 @@ warrant creep <session_id>    # granted vs exercised scope
 
 If that invariant held at every hop, then whatever happened at the leaf was inside what the root principal granted. That is the whole claim.
 
-**Unspecified fields inherit.** A declared child scope says what it *narrows*; anything it doesn't mention comes from the parent. Without this, narrowing one field would mean retyping every other — which trains people to paste a wide scope everywhere just to silence the error, producing exactly the over-permissioning this is meant to expose.
+**Patterns are compared as patterns.** A child asking for `crm.*` under a parent limited to `crm.?` must be refused, even though plain glob matching would read the child's `*` as an ordinary character and say yes. Containment is checked token by token and errs toward refusing: it may reject a scope that was technically safe, but never accepts one that isn't. Matching is case-sensitive on every platform.
+
+**Unspecified fields inherit.** A declared child scope says what it *narrows*; anything it doesn't mention comes from the parent. Without this, narrowing one field would mean retyping every other — which trains people to paste a wide scope everywhere just to silence the error, producing exactly the over-permissioning this is meant to expose. Leaving a field out (`targets=None`) inherits it; an explicit empty list (`targets=[]`) means *none*.
 
 **Scale bounds mutations, not reads.** An agent scanning 412 rows to find deletion candidates is doing its job; deleting 400 of them is the concern. Conflating them makes every table scan a violation and teaches people to ignore alerts.
 
