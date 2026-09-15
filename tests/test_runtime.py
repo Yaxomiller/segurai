@@ -4,7 +4,6 @@ import warrant
 from warrant import Scope
 from warrant.context import NoWarrantError
 
-
 GRANTED = Scope.of(
     operations=["read", "update", "delete"],
     targets=["crm.*"],

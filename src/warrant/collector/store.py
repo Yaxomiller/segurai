@@ -1,23 +1,27 @@
 """Storage.
 
-SQLite, deliberately. At M0 the entire dataset fits in a file, and a file you
-can open with any tool beats infrastructure you have to run. The schema is
-kept close to what a columnar store would want, so the eventual migration to
-Postgres and then ClickHouse is a port rather than a redesign.
+SQLite, deliberately. At this stage the entire dataset fits in a file, and a
+file you can open with any tool beats infrastructure you have to run. The
+schema is kept close to what a columnar store would want, so the eventual move
+to Postgres and then ClickHouse is a port rather than a redesign.
+
+Three tables:
+    sessions  - one row per human request
+    warrants  - one row per delegation hop (parent_id links them into a tree)
+    actions   - one row per thing an agent did, with the admission verdict
 
 Nothing here is append-only or tamper-evident yet. That is a later milestone
-and it matters - a log an engineer can edit is not evidence - but it is not
-what M0 needs to prove.
+and it matters - a log an engineer can edit is not evidence - but the
+signatures already make any edit to a *warrant* detectable.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 from ..models import ActionRecord, Scope, Warrant
 
@@ -42,7 +46,8 @@ CREATE TABLE IF NOT EXISTS warrants (
     expires_at     TEXT NOT NULL,
     parent_id      TEXT,
     depth          INTEGER NOT NULL,
-    signature      BLOB
+    signature      BLOB,
+    key_id         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_warrants_session ON warrants(session_id);
 CREATE INDEX IF NOT EXISTS idx_warrants_parent  ON warrants(parent_id);
@@ -59,12 +64,34 @@ CREATE TABLE IF NOT EXISTS actions (
     at             TEXT NOT NULL,
     allowed        INTEGER NOT NULL,
     violation      TEXT,
-    detail_json    TEXT
+    detail_json    TEXT,
+    blocked        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_actions_session ON actions(session_id);
 CREATE INDEX IF NOT EXISTS idx_actions_warrant ON actions(warrant_id);
 CREATE INDEX IF NOT EXISTS idx_actions_flagged ON actions(allowed);
 """
+
+#: Columns added after the first release, as (table, column, SQL type). A
+#: database created by an older version gets them added on open, so old files
+#: keep working instead of failing with "no such column".
+_ADDED_COLUMNS = [
+    ("warrants", "key_id", "TEXT"),
+    ("actions", "blocked", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+_WARRANT_COLUMNS = ("warrant_id", "session_id", "root_principal", "holder", "scope_json",
+                    "issued_at", "expires_at", "parent_id", "depth", "signature", "key_id")
+_ACTION_COLUMNS = ("action_id", "session_id", "warrant_id", "actor", "operation", "resource",
+                   "scale", "irreversible", "at", "allowed", "violation", "detail_json",
+                   "blocked")
+
+
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    # Naming the columns (rather than relying on their order) keeps inserts
+    # correct on databases whose columns were added by a migration.
+    return (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})")
 
 
 class SessionRow:
@@ -87,62 +114,73 @@ class Store:
 
     def __init__(self, path: str | Path = "warrant.db"):
         self.path = str(path)
-        # check_same_thread=False so a single store can serve an agent running
-        # across a thread pool; writes are serialized by SQLite itself.
+        # check_same_thread=False lets one store serve an agent whose steps run
+        # on a thread pool (LangGraph does this for parallel branches). The
+        # lock makes each write-and-commit atomic across those threads.
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._lock = threading.RLock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._migrate()
+            self._conn.commit()
+
+    def _migrate(self) -> None:
+        for table, column, sql_type in _ADDED_COLUMNS:
+            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
     def close(self) -> None:
         self._conn.close()
+
+    def _write(self, sql: str, params: tuple) -> None:
+        with self._lock:
+            self._conn.execute(sql, params)
+            self._conn.commit()
+
+    def _read(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     # ---- sessions ----------------------------------------------------
 
     def put_session(self, session_id: str, principal: str, request: str,
                     contract: dict | None, started_at: datetime) -> None:
-        self._conn.execute(
+        self._write(
             "INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
             (session_id, principal, request,
              json.dumps(contract) if contract is not None else None,
              started_at.isoformat()),
         )
-        self._conn.commit()
 
     def get_session(self, session_id: str) -> SessionRow | None:
-        row = self._conn.execute(
-            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
-        ).fetchone()
-        return _row_to_session(row) if row else None
+        rows = self._read("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
+        return _row_to_session(rows[0]) if rows else None
 
     def sessions(self, limit: int = 50) -> list[SessionRow]:
-        rows = self._conn.execute(
-            "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = self._read("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,))
         return [_row_to_session(r) for r in rows]
 
     # ---- warrants ----------------------------------------------------
 
     def put_warrant(self, w: Warrant) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO warrants VALUES (?,?,?,?,?,?,?,?,?,?)",
+        self._write(
+            _insert_sql("warrants", _WARRANT_COLUMNS),
             (w.warrant_id, w.session_id, w.root_principal, w.holder,
              json.dumps(w.scope.to_dict()), w.issued_at.isoformat(),
-             w.expires_at.isoformat(), w.parent_id, w.depth, w.signature),
+             w.expires_at.isoformat(), w.parent_id, w.depth, w.signature, w.key_id),
         )
-        self._conn.commit()
 
     def get_warrant(self, warrant_id: str) -> Warrant | None:
-        row = self._conn.execute(
-            "SELECT * FROM warrants WHERE warrant_id = ?", (warrant_id,)
-        ).fetchone()
-        return _row_to_warrant(row) if row else None
+        rows = self._read("SELECT * FROM warrants WHERE warrant_id = ?", (warrant_id,))
+        return _row_to_warrant(rows[0]) if rows else None
 
     def warrants_for_session(self, session_id: str) -> list[Warrant]:
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT * FROM warrants WHERE session_id = ? ORDER BY depth, issued_at",
             (session_id,),
-        ).fetchall()
+        )
         return [_row_to_warrant(r) for r in rows]
 
     def chain_to(self, warrant_id: str) -> list[Warrant]:
@@ -169,30 +207,29 @@ class Store:
     # ---- actions -----------------------------------------------------
 
     def put_action(self, a: ActionRecord) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        self._write(
+            _insert_sql("actions", _ACTION_COLUMNS),
             (a.action_id, a.session_id, a.warrant_id, a.actor, a.operation,
              a.resource, a.scale, int(a.irreversible), a.at.isoformat(),
-             int(a.allowed), a.violation, json.dumps(a.detail or {})),
+             int(a.allowed), a.violation,
+             # default=str: a caller's detail may hold dates or other objects
+             # JSON cannot encode; storing their text beats losing the action.
+             json.dumps(a.detail or {}, default=str),
+             int(a.blocked)),
         )
-        self._conn.commit()
 
     def actions_for_session(self, session_id: str) -> list[ActionRecord]:
-        rows = self._conn.execute(
-            "SELECT * FROM actions WHERE session_id = ? ORDER BY at", (session_id,)
-        ).fetchall()
+        rows = self._read("SELECT * FROM actions WHERE session_id = ? ORDER BY at", (session_id,))
         return [_row_to_action(r) for r in rows]
 
     def violations(self, session_id: str | None = None) -> list[ActionRecord]:
         if session_id:
-            rows = self._conn.execute(
+            rows = self._read(
                 "SELECT * FROM actions WHERE allowed = 0 AND session_id = ? ORDER BY at",
                 (session_id,),
-            ).fetchall()
+            )
         else:
-            rows = self._conn.execute(
-                "SELECT * FROM actions WHERE allowed = 0 ORDER BY at"
-            ).fetchall()
+            rows = self._read("SELECT * FROM actions WHERE allowed = 0 ORDER BY at")
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
@@ -203,10 +240,10 @@ class Store:
         This is the raw material for the scope-creep report: the diff between
         this and the granted scope is the product.
         """
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT DISTINCT operation, resource FROM actions WHERE session_id = ?",
             (session_id,),
-        ).fetchall()
+        )
         used: dict[str, set[str]] = {"operations": set(), "targets": set()}
         for r in rows:
             used["operations"].add(r["operation"])
@@ -235,6 +272,7 @@ def _row_to_warrant(row: sqlite3.Row) -> Warrant:
         expires_at=datetime.fromisoformat(row["expires_at"]),
         parent_id=row["parent_id"],
         depth=row["depth"],
+        key_id=row["key_id"],
         signature=row["signature"],
     )
 
@@ -252,5 +290,6 @@ def _row_to_action(row: sqlite3.Row) -> ActionRecord:
         at=datetime.fromisoformat(row["at"]),
         allowed=bool(row["allowed"]),
         violation=row["violation"],
+        blocked=bool(row["blocked"]),
         detail=json.loads(row["detail_json"]) if row["detail_json"] else {},
     )

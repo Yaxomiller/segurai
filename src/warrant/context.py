@@ -1,14 +1,17 @@
 """Propagating the current warrant across agent hops.
 
-Uses :mod:`contextvars`, which follows both ordinary calls and ``asyncio``
-tasks. That covers most agent frameworks, because they are almost all either
-plain function composition or asyncio.
+"The current warrant" is stored in a :mod:`contextvars` variable. Python
+carries context variables through ordinary function calls and into
+``asyncio`` tasks, and LangGraph copies them into its worker threads. That
+covers most agent frameworks, because they are almost all plain function
+composition, asyncio, or both.
 
-It does *not* survive a process or thread boundary. When a hop crosses one -
-a queue, an HTTP call, a worker pool - the warrant has to travel explicitly;
-:func:`export_warrant` and :func:`import_warrant` are the serialization path
-for that case. Losing propagation is the single most common source of broken
-chains in practice, so :func:`current_warrant` is deliberately loud about it.
+It does *not* survive a process boundary, or a thread started without copying
+the context. When a hop crosses one - a queue, an HTTP call, a worker pool -
+the warrant has to travel explicitly: :func:`export_warrant` turns it into a
+string, :func:`import_warrant` turns it back. Losing propagation is the single
+most common source of broken chains in practice, so :func:`current_warrant`
+is deliberately loud about it.
 """
 
 from __future__ import annotations
@@ -58,7 +61,12 @@ def current_warrant(required: bool = True) -> Warrant | None:
 
 @contextmanager
 def bind_warrant(w: Warrant) -> Iterator[Warrant]:
-    """Make ``w`` the current warrant for the duration of the block."""
+    """Make ``w`` the current warrant for the duration of the block.
+
+    The previous value is restored on exit, even if the block raises, so
+    nesting works: an agent's child warrant is unbound when the agent returns
+    and its caller's warrant is current again.
+    """
     token: Token = _current.set(w)
     try:
         yield w
@@ -69,8 +77,8 @@ def bind_warrant(w: Warrant) -> Iterator[Warrant]:
 def export_warrant(w: Warrant | None = None) -> str:
     """Serialize a warrant for transport across a process boundary.
 
-    Returns a compact base64 string suitable for an HTTP header, a queue
-    message attribute, or OpenTelemetry baggage.
+    Returns a compact URL-safe base64 string suitable for an HTTP header, a
+    queue message attribute, MCP request metadata, or OpenTelemetry baggage.
     """
     w = w or current_warrant()
     payload = w.payload()
@@ -83,19 +91,25 @@ def import_warrant(token: str) -> Warrant:
     """Rebuild a warrant produced by :func:`export_warrant`.
 
     The signature travels with it, so the receiving side can and should verify
-    against the authority's public key before trusting it.
+    it against the authority's public key before trusting it. Nothing here
+    verifies anything - it only decodes.
     """
-    raw = base64.urlsafe_b64decode(token.encode("ascii"))
-    d = json.loads(raw)
-    return Warrant(
-        warrant_id=d["warrant_id"],
-        session_id=d["session_id"],
-        root_principal=d["root_principal"],
-        holder=d["holder"],
-        scope=Scope.from_dict(d["scope"]),
-        issued_at=datetime.fromisoformat(d["issued_at"]),
-        expires_at=datetime.fromisoformat(d["expires_at"]),
-        parent_id=d.get("parent_id"),
-        depth=int(d.get("depth", 0)),
-        signature=base64.b64decode(d.get("signature", "")) or None,
-    )
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii"))
+        d = json.loads(raw)
+        return Warrant(
+            warrant_id=d["warrant_id"],
+            session_id=d["session_id"],
+            root_principal=d["root_principal"],
+            holder=d["holder"],
+            scope=Scope.from_dict(d["scope"]),
+            issued_at=datetime.fromisoformat(d["issued_at"]),
+            expires_at=datetime.fromisoformat(d["expires_at"]),
+            parent_id=d.get("parent_id"),
+            depth=int(d.get("depth", 0)),
+            key_id=d.get("key_id"),
+            signature=base64.b64decode(d.get("signature", "")) or None,
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        # json/base64 errors are ValueError subclasses; a missing field is KeyError.
+        raise ValueError(f"not a valid warrant token: {exc}") from exc

@@ -6,25 +6,39 @@
 >
 > The trail from the action back to the human is broken. That is what this fixes.
 
+New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything fits together in plain language.
+
 ---
 
 ## Status
 
-**M0 — chain capture.** The core model, signed attenuation-only delegation, context propagation, storage, chain reconstruction, and deterministic (Tier 1) admission checks all work and are tested. Framework instrumentation, the intent compiler, and semantic judgment are the next milestones.
+**M0 — chain capture: complete.**
+
+- Signed, attenuation-only delegation (Ed25519), with keys that persist so old chains can be re-verified
+- Tier 1 admission checks on every action, in about a microsecond
+- Observe mode (record and flag) and enforce mode (stop before it happens)
+- Integrations: **LangGraph** (nodes, subgraphs, ToolNode), **MCP** (client and server), **OpenTelemetry** (GenAI semantic conventions)
+- SQLite storage, chain reconstruction, CLI
+
+Next: the intent compiler (M1), which derives the scope from the request text instead of it being written by hand.
 
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .                 # core: needs only `cryptography`
+pip install -e ".[langgraph]"    # + LangGraph integration
+pip install -e ".[mcp]"          # + MCP integration
+pip install -e ".[otel]"         # + OpenTelemetry spans
+pip install -e ".[dev]"          # everything, plus pytest
 ```
 
-## Use
+## Quick start
 
 ```python
 import warrant
 from warrant import Scope
 
-warrant.configure(store="warrant.db")
+warrant.configure(store="warrant.db")      # signing key kept beside it as warrant.key
 
 granted = Scope.of(
     operations=["read", "update", "delete"],
@@ -33,8 +47,8 @@ granted = Scope.of(
     constraints=["only records with no recent activity"],
 )
 
-@warrant.agent("crm_agent", scope=Scope.of(
-    operations=["read", "delete"], targets=["crm.opportunities"]))
+# An agent says only what it narrows; everything else is inherited.
+@warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
 def crm_agent():
     warrant.act("read", "crm.opportunities", scale=412)
     warrant.act("delete", "crm.opportunities", scale=400, irreversible=True)
@@ -49,36 +63,103 @@ with warrant.session(
     scope=granted,
 ) as s:
     assistant()
-    print(warrant.render(s.session_id))
+
+print(warrant.render(s.session_id))
 ```
 
 ```
-Session ses_5d1dff8d65fc482d
-  Principal : sarah@company.com
-  Request   : 'clean up our old sales records'
-
 Delegation chain
   └─ entrypoint  [wrt_7a07522323244bb1]
         ops={delete,read,update} targets={crm.*} max_scale=50
      └─ assistant  [wrt_3f22fd11d57f4d91]
            ops={delete,read,update} targets={crm.*} max_scale=50
         └─ crm_agent  [wrt_ba50b4faee524582]
-              ops={delete,read} targets={crm.opportunities} max_scale=50
-              [ok  ] read crm.opportunities scale=412
-              [FAIL] delete crm.opportunities scale=400
-                     -> scale 400 exceeds limit 50
+              ops={delete,read,update} targets={crm.opportunities} max_scale=50
+              [ok     ] read crm.opportunities scale=412
+              [FAIL   ] delete crm.opportunities scale=400
+                        -> scale 400 exceeds limit 50
 
-Summary: 3 warrants, 3 actions, 1 violation(s)
+Summary: 3 warrants, 2 actions, 1 violation(s)
+  ! crm_agent: delete crm.opportunities (scale=400) - scale 400 exceeds limit 50 [went ahead]
 ```
+
+`[FAIL   ]` means the action was outside the warrant and went ahead (observe mode). With `warrant.configure(mode="enforce")` it is stopped before it happens and shows as `[BLOCKED]`.
+
+## Guarding tools
+
+Describe a tool once with an `ActionSpec` — what operation it performs, on which resource, at what scale — and every call is checked *before* the tool body runs:
+
+```python
+from warrant import ActionSpec, count
+
+@warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
+def delete_records(table: str, ids: list[int]) -> int:
+    ...
+```
+
+## LangGraph
+
+```python
+from warrant.instrument.langgraph import ToolGuard, agent_node
+
+guard = ToolGuard({
+    "delete_records": ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True),
+})
+
+crm = StateGraph(MessagesState)
+crm.add_node("model", call_model)
+crm.add_node("tools", ToolNode(tools, wrap_tool_call=guard.wrap, awrap_tool_call=guard.awrap))
+...
+
+app = StateGraph(MessagesState)
+app.add_node("crm_agent", agent_node("crm_agent", crm.compile(),
+                                     scope=Scope.of(targets=["crm.opportunities"])))
+
+with warrant.session(principal="sarah@company.com", request=request, scope=granted):
+    app.invoke({"messages": [HumanMessage(request)]})
+```
+
+Works for plain, async and parallel nodes, and for compiled subgraphs. In enforce mode a blocked tool call comes back to the model as an error message saying why, so the agent can change course instead of the graph crashing. Full example: [examples/langgraph_demo.py](examples/langgraph_demo.py).
+
+## MCP
+
+```python
+from warrant.instrument.mcp import WarrantedClient, bind_from_meta
+
+# Agent side: calls are checked before they are sent, and carry the warrant.
+crm = WarrantedClient(mcp_client, server="crm", rules={...})
+await crm.call_tool("delete_records", {"table": "opportunities", "ids": ids})
+
+# Server side: verify the incoming warrant and continue the same chain.
+@server.tool()
+async def delete_records(table: str, ids: list[int], ctx: Context) -> str:
+    with bind_from_meta(ctx, holder="crm_server"):
+        warrant.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
+        ...
+```
+
+Tools without a rule are described from the server's own `readOnlyHint` / `destructiveHint` annotations. Full example: [examples/mcp_demo.py](examples/mcp_demo.py).
+
+## OpenTelemetry
+
+```python
+from warrant.instrument import otel
+otel.enable()
+```
+
+Sessions, agent hops and tool calls become spans named per the OpenTelemetry GenAI conventions (`invoke_workflow`, `invoke_agent`, `execute_tool`), carrying the full signed warrant as `warrant.*` attributes. The chain shows up in whatever tracing backend a team already uses. Full example: [examples/otel_demo.py](examples/otel_demo.py).
 
 ## CLI
 
 ```bash
 warrant sessions              # list recent sessions
-warrant show <session_id>     # render the delegation tree
-warrant verify <session_id>   # check structure and attenuation
+warrant show <session_id>     # render the delegation tree (--json, --ascii)
+warrant verify <session_id>   # re-check every signature, link and narrowing
 warrant creep <session_id>    # granted vs exercised scope
+warrant keygen                # create a signing key
 ```
+
+`--db` picks the database (default `warrant.db`); the key is found beside it.
 
 ## Design
 
@@ -92,7 +173,11 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 
 **Scale bounds mutations, not reads.** An agent scanning 412 rows to find deletion candidates is doing its job; deleting 400 of them is the concern. Conflating them makes every table scan a violation and teaches people to ignore alerts.
 
+**An action nobody can describe is not one anybody authorized.** A tool call whose arguments don't fit its `ActionSpec`, or a tool nobody wrote a spec for, is recorded as a violation rather than waved through.
+
 **Observe by default.** Violations are recorded, nothing is blocked. Nobody lets an unproven library block production traffic — but they will let it watch, and watching produces the evidence that earns the right to enforce later.
+
+**Observability never breaks the agent.** A failing listener or exporter is logged and ignored.
 
 ## What's next
 
@@ -100,10 +185,12 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 |---|---|
 | M1 | Intent compiler — derive the scope contract from the request automatically |
 | M2 | Tier 1 check suite, 20 seeded scenarios |
-| M3 | OpenTelemetry ingest, LangGraph + MCP instrumentation, open source release |
+| M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
 | M4 | Tier 2 semantic judge for flagged actions |
 | M5 | Design-partner pilots |
 | M6 | Scope-creep report |
+
+Known limits are listed honestly at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#honest-limits-what-is-not-done-yet).
 
 ## Tests
 

@@ -447,6 +447,7 @@ class Warrant:
     expires_at: datetime
     parent_id: str | None = None
     depth: int = 0               # 0 for the root, parent's depth + 1 below it
+    key_id: str | None = None    # which signing key signed it (see authority.py)
     signature: bytes | None = field(default=None, repr=False)
 
     def payload(self) -> dict[str, Any]:
@@ -466,6 +467,7 @@ class Warrant:
             "expires_at": self.expires_at.isoformat(),
             "parent_id": self.parent_id,
             "depth": self.depth,
+            "key_id": self.key_id,
         }
 
     def signing_bytes(self) -> bytes:
@@ -483,8 +485,15 @@ class ActionRecord:
     """Something an agent actually did, recorded under a Warrant.
 
     ``allowed`` and ``violation`` hold the Tier 1 verdict at the moment the
-    action was recorded. ``detail`` is free-form context from the caller
-    (row counts, filters used, a note) that later tiers can reason over.
+    action was recorded.
+
+    ``blocked`` says what happened next, which an auditor needs to know:
+    True means ENFORCE mode stopped the action, so it never took place;
+    a violation with ``blocked=False`` was recorded in OBSERVE mode and the
+    action went ahead.
+
+    ``detail`` is free-form context from the caller (row counts, filters
+    used, a note, the tool name) that later tiers can reason over.
     """
 
     action_id: str
@@ -498,4 +507,5 @@ class ActionRecord:
     at: datetime = field(default_factory=utcnow)
     allowed: bool = True
     violation: str | None = None
+    blocked: bool = False
     detail: dict[str, Any] = field(default_factory=dict)

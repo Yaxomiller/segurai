@@ -21,8 +21,21 @@ the two so the question "who authorized this?" has an answer.
     ) as s:
         run_assistant()
         print(warrant.render(s.session_id))
+
+Map of the package:
+
+    models.py        Scope, Warrant, ActionRecord - the data
+    authority.py     signing keys; minting, attenuating, verifying warrants
+    context.py       which warrant is "current"; moving one between processes
+    actions.py       ActionSpec - describing a tool call as an action
+    runtime.py       the API above: session, agent, act, tool, configure
+    collector/       SQLite storage and rebuilding/rendering the chain
+    instrument/      optional integrations: OpenTelemetry, LangGraph, MCP
+    cli.py           the `warrant` command
 """
 
+from ._version import __version__
+from .actions import ActionSpec, ActionSpecError, arg, count
 from .authority import Authority, ChainError, verify_chain
 from .collector.chain import chain_summary, render_session
 from .collector.store import Store
@@ -34,14 +47,32 @@ from .context import (
     import_warrant,
 )
 from .models import ActionRecord, Scope, Warrant
-from .runtime import Mode, Session, ViolationError, act, agent, configure, session
+from .runtime import (
+    Listener,
+    Mode,
+    Session,
+    ViolationError,
+    act,
+    add_listener,
+    agent,
+    check_tool_call,
+    configure,
+    delegate,
+    remove_listener,
+    session,
+    tool,
+    tool_span,
+)
 from .runtime import _rt as _runtime
 
-__version__ = "0.1.0"
-
 __all__ = [
+    "__version__",
     # runtime
-    "configure", "session", "agent", "act", "Mode", "Session", "ViolationError",
+    "configure", "session", "agent", "delegate", "act", "tool", "tool_span",
+    "check_tool_call", "Mode", "Session", "ViolationError",
+    "Listener", "add_listener", "remove_listener",
+    # describing tool calls
+    "ActionSpec", "ActionSpecError", "count", "arg",
     # model
     "Scope", "Warrant", "ActionRecord",
     # authority

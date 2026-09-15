@@ -118,10 +118,13 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
         if show_scopes:
             lines.append(f"{child_prefix}   {_fmt_scope(w)}")
         for a in by_warrant.get(w.warrant_id, []):
-            mark = "ok  " if a.allowed else "FAIL"
+            # ok      - within the warrant
+            # FAIL    - outside it, recorded in OBSERVE mode: it still went ahead
+            # BLOCKED - outside it, stopped in ENFORCE mode: it never happened
+            mark = "ok     " if a.allowed else ("BLOCKED" if a.blocked else "FAIL   ")
             lines.append(f"{child_prefix}   [{mark}] {a.operation} {a.resource} scale={a.scale}")
             if not a.allowed:
-                lines.append(f"{child_prefix}          -> {a.violation}")
+                lines.append(f"{child_prefix}             -> {a.violation}")
         kids = children.get(w.warrant_id, [])
         for i, k in enumerate(kids):
             walk(k, child_prefix, i == len(kids) - 1)
@@ -130,13 +133,16 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
         walk(r, "  ", i == len(roots) - 1)
 
     flagged = [a for a in actions if not a.allowed]
+    blocked = sum(1 for a in flagged if a.blocked)
     lines.append("")
     lines.append(
         f"Summary: {len(warrants)} warrants, {len(actions)} actions, "
-        f"{len(flagged)} violation(s)"
+        f"{len(flagged)} violation(s)" + (f", {blocked} blocked" if blocked else "")
     )
     for a in flagged:
-        lines.append(f"  ! {a.actor}: {a.operation} {a.resource} (scale={a.scale}) - {a.violation}")
+        outcome = "blocked" if a.blocked else "went ahead"
+        lines.append(f"  ! {a.actor}: {a.operation} {a.resource} (scale={a.scale}) - "
+                     f"{a.violation} [{outcome}]")
 
     return "\n".join(lines)
 
@@ -161,6 +167,7 @@ def chain_summary(store: Store, session_id: str) -> dict:
                 "resource": a.resource,
                 "scale": a.scale,
                 "reason": a.violation,
+                "blocked": a.blocked,
             }
             for a in actions
             if not a.allowed

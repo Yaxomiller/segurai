@@ -8,3 +8,7 @@ dist/
 .venv/
 venv/
 .DS_Store
+
+# Signing keys created by warrant.configure()/warrant keygen
+*.key
+*.pub

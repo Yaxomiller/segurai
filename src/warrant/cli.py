@@ -4,8 +4,11 @@
     warrant show <session_id>        render the delegation tree
     warrant verify <session_id>      check every chain in a session
     warrant creep <session_id>       granted vs exercised scope
+    warrant keygen                   create a signing key
 
-``--db`` selects the store, defaulting to ./warrant.db.
+``--db`` selects the store, defaulting to ./warrant.db. The signing key is
+looked for beside it (warrant.db -> warrant.key / warrant.pub) unless
+``--key`` says otherwise.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .authority import Authority, ChainError, verify_chain
 from .collector.chain import chain_summary, render_session
@@ -21,6 +25,17 @@ from .collector.store import Store
 
 def _store(args: argparse.Namespace) -> Store:
     return Store(args.db)
+
+
+def _find_key(args: argparse.Namespace) -> Path | None:
+    """The key to verify with: --key if given, else a .pub or .key beside the database."""
+    if args.key:
+        return Path(args.key)
+    db = Path(args.db)
+    for candidate in (db.with_suffix(".pub"), db.with_suffix(".key")):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
@@ -46,11 +61,11 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Verify chains against a public key.
+    """Verify every root-to-leaf chain in a session.
 
-    Note the limitation: with an ephemeral in-process Authority there is no
-    persisted key to check against, so this is only meaningful once signing
-    moves to the collector. Until then it verifies structure, not signatures.
+    With a key: signatures, links, depths, expiry ordering and attenuation.
+    Without one: everything except signatures - and it says so, because a
+    structure-only check can be passed by a careful forger.
     """
     store = _store(args)
     warrants = store.warrants_for_session(args.session_id)
@@ -58,6 +73,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"No warrants for session {args.session_id}")
         return 1
 
+    key_path = _find_key(args)
+    verifier = None
+    if key_path is not None:
+        if not key_path.exists():
+            print(f"Key file not found: {key_path}")
+            return 1
+        verifier = Authority.verifier(key_path)
+
+    # A leaf is a warrant nobody delegated from; checking the chain up from
+    # each leaf covers every warrant in the tree.
     parents = {w.parent_id for w in warrants if w.parent_id}
     leaves = [w for w in warrants if w.warrant_id not in parents]
 
@@ -65,16 +90,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
     for leaf in leaves:
         try:
             chain = store.chain_to(leaf.warrant_id)
-        except ValueError as exc:
-            problems.append(f"{leaf.holder}: {exc}")
-            continue
-        for i, w in enumerate(chain[1:], start=1):
-            parent = chain[i - 1]
-            ok, reason = w.scope.is_subset_of(parent.scope)
-            if not ok:
-                problems.append(f"{w.holder} [{w.warrant_id}]: attenuation violated - {reason}")
-            if w.depth != parent.depth + 1:
-                problems.append(f"{w.holder} [{w.warrant_id}]: depth mismatch")
+            verify_chain(chain, verifier, allow_expired=True)
+        except (ChainError, ValueError) as exc:
+            problems.append(f"{leaf.holder} [{leaf.warrant_id}]: {exc}")
 
     if problems:
         print(f"FAILED - {len(problems)} problem(s):")
@@ -82,8 +100,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"  - {p}")
         return 1
 
-    print(f"OK - {len(leaves)} chain(s), structure and attenuation intact.")
-    print("Note: signature verification requires a persisted authority key (M3).")
+    if verifier is not None:
+        print(f"OK - {len(leaves)} chain(s): signatures valid ({verifier.key_id}), "
+              f"links and attenuation intact.")
+    else:
+        print(f"OK - {len(leaves)} chain(s), structure and attenuation intact.")
+        print("Signatures NOT checked: no key found. Pass --key, or keep the .key/.pub "
+              "file beside the database.")
     return 0
 
 
@@ -111,6 +134,20 @@ def cmd_creep(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keygen(args: argparse.Namespace) -> int:
+    path = Path(args.key or Path(args.db).with_suffix(".key"))
+    if path.exists() and not args.force:
+        print(f"{path} already exists (use --force to replace it; old warrants "
+              f"will then fail verification).")
+        return 1
+    authority = Authority()
+    authority.save(path)
+    print(f"Wrote private key {path} and public key {path.with_suffix('.pub')}")
+    print(f"Key id: {authority.key_id}")
+    print("Keep the .key file secret. Share the .pub file with whoever verifies.")
+    return 0
+
+
 def _never_crash_on_unprintable_text() -> None:
     """Replace characters the terminal cannot show instead of raising.
 
@@ -128,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="warrant", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default="warrant.db", help="store path (default: warrant.db)")
+    p.add_argument("--key", default=None,
+                   help="signing key file (default: beside the database)")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("sessions", help="list recent sessions")
@@ -148,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("creep", help="granted vs exercised scope")
     s.add_argument("session_id")
     s.set_defaults(func=cmd_creep)
+
+    s = sub.add_parser("keygen", help="create a signing key")
+    s.add_argument("--force", action="store_true", help="replace an existing key")
+    s.set_defaults(func=cmd_keygen)
 
     args = p.parse_args(argv)
     return args.func(args)

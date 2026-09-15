@@ -4,20 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "warrant-provenance"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Provenance and authority for AI agent chains - who authorized what your agents did"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
+# The core needs only a signing library. Everything else is an optional extra,
+# so trying warrant never drags a framework into someone's environment.
 dependencies = [
     "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+otel = ["opentelemetry-api>=1.30", "opentelemetry-sdk>=1.30"]
+langgraph = ["langgraph>=1.0"]
+mcp = ["mcp>=2.0"]
+all = ["warrant-provenance[otel,langgraph,mcp]"]
+dev = ["pytest>=8.0", "warrant-provenance[all]"]
 
 [project.scripts]
 warrant = "warrant.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "warrant._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
