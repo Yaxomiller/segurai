@@ -248,6 +248,10 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
             _scope_html(root.scope) if root else "<p class='muted'>No root warrant.</p>", "</div>"]
     if isinstance(sess.contract, dict) and sess.contract.get("contract"):
         left += ["<div class='card'><h2>Compiled contract</h2>", _contract_html(sess.contract), "</div>"]
+    elif isinstance(sess.contract, dict) and sess.contract.get("observed"):
+        left.append("<div class='card'><h2>Observed, not authorized</h2><p class='unk'>Rebuilt from "
+                    "existing OpenTelemetry spans. No warrants were issued, so actions were recorded "
+                    "but not checked, and nothing here is signed.</p></div>")
     else:
         left.append("<div class='card'><h2>Contract</h2><p class='muted'>None - the scope was "
                     "written by hand rather than compiled from the request.</p></div>")

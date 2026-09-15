@@ -215,6 +215,8 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 
 **Web view.** The same server serves read-only pages ([`collector/web.py`](../src/warrant/collector/web.py)); `warrant ui` runs it for a local database. `/` lists sessions; `/sessions/<id>` shows the granted scope and compiled contract beside the delegation chain, with findings inline, and re-verifies every signature on each load. The pages contain no scripts, escape everything that came from a request, and are sent with a Content-Security-Policy that forbids scripts anyway. With a token set, browsers ask for it as a password.
 
+**Zero-integration path.** Spans without warrant attributes aren't wasted. Standard GenAI spans (`invoke_agent`, `execute_tool`) from any instrumentation are kept, and each trace becomes an *observed* session (`otel_<trace id>`): agents nested by their span parents, tool calls as actions. Spans arrive child-first and in separate batches, so a trace's chain is rebuilt each time more of it arrives. Observed chains carry no scope and no signatures, and every action is marked unverifiable: they show what happened, not what was allowed. A trace that carries real warrants is never also built as observed.
+
 ---
 
 ## File map
@@ -232,7 +234,7 @@ src/warrant/
   collector/
     store.py           SQLite storage and migrations
     chain.py           tree reconstruction and rendering
-    otlp.py            rebuilding warrants and actions from received spans
+    otlp.py            rebuilding warrants, actions and observed chains from received spans
     server.py          the collector's HTTP endpoint
     web.py             the read-only web view
   intent/
@@ -262,6 +264,7 @@ tests/                 one file per area; see below
 | `test_otel.py`, `test_langgraph.py`, `test_mcp.py` | each integration against the real library |
 | `test_collector.py` | spans from the real OpenTelemetry exporter rebuild a verified chain; forged, oversized and unauthorised input is refused |
 | `test_web.py`, `test_intent_checks.py` | the web view escapes request text, shows findings and failed verification, and requires the token; compiled checks are validated against catalog evidence |
+| `test_observed.py` | ordinary OpenTelemetry GenAI spans, arriving in any order, rebuild an observed chain labeled as unchecked |
 | `test_intent.py`, `test_intent_claude.py`, `test_intent_eval.py` | the catalog check and ceiling; the exact Claude API request, checked offline; the grading rules and the dataset |
 | `test_examples.py` | every example still runs |
 
@@ -277,3 +280,4 @@ tests/                 one file per area; see below
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
 - **Generator functions cannot be agents or tools yet** — the warrant would leak between yields. Clear error if tried.
 - **MCP trust is single-organisation.** A server must hold the same key as the client.
+- **Observed chains are rebuilt per trace.** An agent run spread over several traces appears as several observed sessions, and a very large trace is re-read each time a batch of it arrives.

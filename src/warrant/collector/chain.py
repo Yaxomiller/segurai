@@ -113,6 +113,8 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
             lines.append(f"  Condition : {constraint}")
         for question in compiled.get("clarifications_needed", []):
             lines.append(f"  Unclear   : {question}")
+    if isinstance(sess.contract, dict) and sess.contract.get("observed"):
+        lines.append("  Observed  : rebuilt from existing OpenTelemetry spans; nothing was signed or checked")
     lines += ["", "Delegation chain"]
 
     roots, children = build_tree(warrants)

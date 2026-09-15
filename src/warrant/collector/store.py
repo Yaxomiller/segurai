@@ -71,6 +71,23 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE INDEX IF NOT EXISTS idx_actions_session ON actions(session_id);
 CREATE INDEX IF NOT EXISTS idx_actions_warrant ON actions(warrant_id);
 CREATE INDEX IF NOT EXISTS idx_actions_flagged ON actions(allowed);
+
+-- Spans from existing OpenTelemetry instrumentation, kept so an "observed"
+-- chain can be rebuilt as the rest of its trace arrives (see otlp.py).
+CREATE TABLE IF NOT EXISTS observed_spans (
+    span_id         TEXT PRIMARY KEY,
+    trace_id        TEXT NOT NULL,
+    parent_span_id  TEXT,
+    name            TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    attributes_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_observed_trace ON observed_spans(trace_id);
+
+-- Traces that carried real warrants; those are never rebuilt as observed.
+CREATE TABLE IF NOT EXISTS warrant_traces (
+    trace_id        TEXT PRIMARY KEY
+);
 """
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -236,6 +253,37 @@ class Store:
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    # ---- observed spans (zero-integration ingest) ----------------------
+
+    def put_observed_span(self, trace_id: str, span_id: str, parent_span_id: str | None,
+                          name: str, started_at: datetime, attributes: dict) -> None:
+        self._write(
+            "INSERT OR REPLACE INTO observed_spans VALUES (?,?,?,?,?,?)",
+            (span_id, trace_id, parent_span_id, name, started_at.isoformat(),
+             json.dumps(attributes, sort_keys=True, default=str)),
+        )
+
+    def observed_spans(self, trace_id: str) -> list[dict]:
+        """Every kept span of one trace, oldest first."""
+        rows = self._read("SELECT * FROM observed_spans WHERE trace_id = ? ORDER BY started_at",
+                          (trace_id,))
+        return [{"span_id": r["span_id"], "parent_span_id": r["parent_span_id"], "name": r["name"],
+                 "started_at": datetime.fromisoformat(r["started_at"]),
+                 "attributes": json.loads(r["attributes_json"])} for r in rows]
+
+    def mark_warrant_trace(self, trace_id: str) -> None:
+        self._write("INSERT OR IGNORE INTO warrant_traces VALUES (?)", (trace_id,))
+
+    def is_warrant_trace(self, trace_id: str) -> bool:
+        return bool(self._read("SELECT 1 FROM warrant_traces WHERE trace_id = ?", (trace_id,)))
+
+    def forget_session(self, session_id: str) -> None:
+        """Remove a session with its warrants and actions (used to replace an observed chain)."""
+        with self._lock:
+            for table in ("actions", "warrants", "sessions"):
+                self._conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+            self._conn.commit()
 
     def changed_total(self, session_id: str) -> int:
         """How many records the session's actions have changed so far.

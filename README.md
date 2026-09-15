@@ -35,7 +35,11 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - Conditions become testable Checks (e.g. `days_since_activity >= 180`), evaluated against evidence the agent reports; missing evidence is "unverifiable", never a false alarm
 - 20 seeded scenarios: 10/10 violations caught for the right reason, 0/10 false positives, 0.15 ms per checked action (p99)
 
-Next: public release (M3).
+**M3 — public release: in progress.**
+
+- Zero-integration path: existing OpenTelemetry GenAI spans become an observed chain with no code changes
+- CI on Linux, Windows and macOS across Python 3.10–3.13, plus packaging checks
+- Still to do: publishing to PyPI and a public repository (both need the maintainer's accounts)
 
 ## Install
 
@@ -212,6 +216,8 @@ warrant collect --db central.db --key org.pub --port 4318
 ```
 
 The collector rebuilds every chain and re-checks every signature with the organisation's public key, refusing anything forged.
+
+**Already using OpenTelemetry? Try it with no code changes.** Point your existing exporter at the collector. Standard GenAI spans (`invoke_agent`, `execute_tool`) from any framework are rebuilt into an *observed* chain: which agent called which tool, and for whom. Observed chains are clearly labeled — nothing in them was authorized, signed or checked — so they show where warrants would go before you adopt them.
 
 ## Web view
 

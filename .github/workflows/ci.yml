@@ -1,0 +1,59 @@
+# Runs on every push and pull request: lint, the full test suite on three
+# operating systems and four Python versions, the Tier 1 scenario suite, and
+# a check that the package builds and its metadata is valid.
+#
+# Nothing here calls the Anthropic API - the intent compiler's live eval is
+# run by hand, because every call costs money.
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check src tests examples --select E,F,W,B,I --ignore E501
+      - name: Tests
+        run: python -m pytest -q
+      - name: Tier 1 scenario suite (milestone M2 target)
+        run: warrant eval-tier1
+
+  package:
+    name: package builds cleanly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+      - name: Check metadata
+        run: python -m twine check --strict dist/*
+      - name: Install the wheel and import it
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import warrant; print('warrant', warrant.__version__)"

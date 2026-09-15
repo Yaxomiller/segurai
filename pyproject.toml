@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,23 @@ dynamic = ["version"]
 description = "Provenance and authority for AI agent chains - who authorized what your agents did"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+keywords = ["ai-agents", "authorization", "provenance", "audit", "opentelemetry", "langgraph", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 # The core needs only a signing library. Everything else is an optional extra,
 # so trying warrant never drags a framework into someone's environment.
 dependencies = [
@@ -37,6 +53,10 @@ version = { attr = "warrant._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# py.typed tells type checkers the package ships its own type hints.
+[tool.setuptools.package-data]
+warrant = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
