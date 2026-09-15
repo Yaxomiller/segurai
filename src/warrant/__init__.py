@@ -1,0 +1,90 @@
+"""warrant - provenance and authority for AI agent chains.
+
+Records what a human asked for, records what the agents actually did, and links
+the two so the question "who authorized this?" has an answer.
+
+    import warrant
+    from warrant import Scope
+
+    warrant.configure(store="warrant.db")
+
+    scope = Scope.of(
+        operations=["read", "update", "delete"],
+        targets=["crm.*"],
+        max_scale=50,
+    )
+
+    with warrant.session(
+        principal="sarah@company.com",
+        request="clean up our old sales records",
+        scope=scope,
+    ) as s:
+        run_assistant()
+        print(warrant.render(s.session_id))
+"""
+
+from .authority import Authority, ChainError, verify_chain
+from .collector.chain import chain_summary, render_session
+from .collector.store import Store
+from .context import (
+    NoWarrantError,
+    bind_warrant,
+    current_warrant,
+    export_warrant,
+    import_warrant,
+)
+from .models import ActionRecord, Scope, Warrant
+from .runtime import Mode, Session, ViolationError, act, agent, configure, session
+from .runtime import _rt as _runtime
+
+__version__ = "0.1.0"
+
+__all__ = [
+    # runtime
+    "configure", "session", "agent", "act", "Mode", "Session", "ViolationError",
+    # model
+    "Scope", "Warrant", "ActionRecord",
+    # authority
+    "Authority", "ChainError", "verify_chain",
+    # context
+    "current_warrant", "bind_warrant", "export_warrant", "import_warrant",
+    "NoWarrantError",
+    # storage and reporting
+    "Store", "render", "summary", "verify_session",
+]
+
+
+def render(session_id: str, show_scopes: bool = True) -> str:
+    """Render a session's delegation tree using the configured store."""
+    store, _ = _runtime.ensure()
+    return render_session(store, session_id, show_scopes=show_scopes)
+
+
+def summary(session_id: str) -> dict:
+    """Machine-readable summary of a session."""
+    store, _ = _runtime.ensure()
+    return chain_summary(store, session_id)
+
+
+def verify_session(session_id: str, allow_expired: bool = True) -> list[str]:
+    """Verify every root-to-leaf chain in a session.
+
+    Returns a list of problems; empty means every chain is signed, correctly
+    linked, and attenuated at every hop. Expired warrants are tolerated by
+    default because audits happen after the fact - what matters is that the
+    chain was valid when it was used.
+    """
+    store, authority = _runtime.ensure()
+    warrants = store.warrants_for_session(session_id)
+    problems: list[str] = []
+
+    parents = {w.parent_id for w in warrants if w.parent_id}
+    leaves = [w for w in warrants if w.warrant_id not in parents]
+
+    for leaf in leaves:
+        try:
+            chain = store.chain_to(leaf.warrant_id)
+            verify_chain(chain, authority, allow_expired=allow_expired)
+        except (ChainError, ValueError) as exc:
+            problems.append(f"{leaf.holder} [{leaf.warrant_id}]: {exc}")
+    return problems
