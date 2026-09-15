@@ -33,6 +33,7 @@ CONTRACT = {
     "implied_constraints": ["only records with no recent activity"],
     "irreversible_expected": False,
     "clarifications_needed": [],
+    "checks": [],
 }
 
 

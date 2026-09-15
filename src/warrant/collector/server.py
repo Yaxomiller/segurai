@@ -17,6 +17,8 @@ or be replaced by a production web stack later.
 Endpoints:
     POST /v1/traces   OTLP/HTTP, protobuf or JSON, optional gzip
     GET  /healthz     returns "ok"
+    GET  /            the web view of sessions (see web.py)
+    GET  /sessions/x  one session: contract, chain, findings, verification
 
 Security defaults:
     * listens on 127.0.0.1 unless told otherwise
@@ -28,15 +30,19 @@ Security defaults:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import logging
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
 
 from ..authority import Authority
 from .otlp import IngestReport, UnsupportedEncoding, decode_request, ingest
 from .store import Store
+from .web import CSP, index_page, session_page
 
 __all__ = ["CollectorServer", "DEFAULT_MAX_BODY"]
 
@@ -87,11 +93,26 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self) -> bool:
+        """Accept the token as "Bearer <token>" (exporters) or as a Basic password (browsers).
+
+        A browser cannot attach a bearer token to a page visit, but it does
+        show a login box for Basic auth; the user name is ignored. Comparisons
+        run in constant time so the token cannot be guessed from timings.
+        """
         if not self.server.token:
             return True
+        token = self.server.token.encode("utf-8")
         supplied = self.headers.get("Authorization", "")
-        expected = f"Bearer {self.server.token}"
-        return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+        if hmac.compare_digest(supplied.encode("utf-8", "replace"), b"Bearer " + token):
+            return True
+        if supplied[:6].lower() == "basic ":
+            try:
+                decoded = base64.b64decode(supplied[6:].strip(), validate=True)
+            except (binascii.Error, ValueError):
+                return False
+            _, _, password = decoded.partition(b":")
+            return hmac.compare_digest(password, token)
+        return False
 
     def _read_body(self) -> bytes | None:
         """Read the body within the size limit. Sends the error response and returns None on failure."""
@@ -125,9 +146,35 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ---- endpoints -----------------------------------------------------
 
+    def _send_page(self, status: int, page: str) -> None:
+        """An HTML page, with headers that stop it being scripted, sniffed, framed or cached."""
+        self._send(status, page.encode("utf-8"), "text/html; charset=utf-8", extra_headers={
+            "Content-Security-Policy": CSP,
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
+        })
+
     def do_GET(self) -> None:
-        if self.path.split("?")[0] == "/healthz":
+        path = self.path.split("?")[0]
+        if path == "/healthz":
             self._send(200, b"ok")
+            return
+        # The web view shows who asked for what, so it sits behind the token too.
+        if not self._authorized():
+            self._send(401, b"unauthorized",
+                       extra_headers={"WWW-Authenticate": 'Basic realm="warrant", charset="UTF-8"'})
+            return
+        if path == "/":
+            self._send_page(200, index_page(self.server.store))
+        elif path.startswith("/sessions/"):
+            session_id = unquote(path[len("/sessions/"):])
+            page = session_page(self.server.store, session_id, self.server.verifier)
+            if page is None:
+                self._send(404, b"no such session")
+            else:
+                self._send_page(200, page)
         else:
             self._send(404, b"not found")
 

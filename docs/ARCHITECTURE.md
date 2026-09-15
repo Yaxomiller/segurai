@@ -131,6 +131,7 @@ A session's root scope says what the person authorized. It is either written by 
    expected_targets       crm.opportunities
    expected_scale         records, typical max 50
    implied_constraints    only records with no recent activity; must not affect active customers
+   checks                 days_since_activity >= 180; account_status not in [active]
    irreversible_expected  false
       |  1. catalog check - names that don't exist in this organisation are dropped and reported
       |  2. ceiling clamp - cut down to what the person is really permitted to do
@@ -142,6 +143,7 @@ The model's output is treated as untrusted. It can only ever *narrow* the person
 
 - **Catalog** (example: `evals/intent/catalog.json`) — the operations and resources that exist. The output schema itself only allows catalog operations; targets, which may be wildcards, are checked afterwards.
 - **Fail closed** — if the work changes records but no scale is given, the limit becomes 1, so any bigger change is flagged for a person.
+- **Checks** — catalog resources can list *evidence*, such as `days_since_activity`. When a condition can be tested with listed evidence, the compiler writes a Check for it. A check that relies on evidence the catalog doesn't list is dropped, but its condition stays as text, so nothing the person meant is lost.
 - **Model** — Claude Opus 5. The instructions and catalog are marked for prompt caching (identical bytes on every call), and server-side refusal fallbacks are on.
 - **Measuring it** — [`evals/intent/`](../evals/intent/README.md) holds 50 labeled requests; `warrant eval-intent` grades the compiler field by field against the M1 target of 80% acceptable.
 
@@ -211,6 +213,8 @@ Agents use the standard OpenTelemetry OTLP exporter; nothing warrant-specific is
 
 Safety defaults: it listens only on the local machine unless told otherwise, can require a bearer token (`WARRANT_COLLECTOR_TOKEN`), and caps request size before and after decompression.
 
+**Web view.** The same server serves read-only pages ([`collector/web.py`](../src/warrant/collector/web.py)); `warrant ui` runs it for a local database. `/` lists sessions; `/sessions/<id>` shows the granted scope and compiled contract beside the delegation chain, with findings inline, and re-verifies every signature on each load. The pages contain no scripts, escape everything that came from a request, and are sent with a Content-Security-Policy that forbids scripts anyway. With a token set, browsers ask for it as a password.
+
 ---
 
 ## File map
@@ -230,6 +234,7 @@ src/warrant/
     chain.py           tree reconstruction and rendering
     otlp.py            rebuilding warrants and actions from received spans
     server.py          the collector's HTTP endpoint
+    web.py             the read-only web view
   intent/
     contract.py        Catalog and ScopeContract; catalog check, fail-closed scale
     compiler.py        IntentCompiler and the Claude backend
@@ -256,6 +261,7 @@ tests/                 one file per area; see below
 | `test_chain.py`, `test_render.py`, `test_store.py` | reconstruction, output on any terminal, blocked vs went-ahead, old database files |
 | `test_otel.py`, `test_langgraph.py`, `test_mcp.py` | each integration against the real library |
 | `test_collector.py` | spans from the real OpenTelemetry exporter rebuild a verified chain; forged, oversized and unauthorised input is refused |
+| `test_web.py`, `test_intent_checks.py` | the web view escapes request text, shows findings and failed verification, and requires the token; compiled checks are validated against catalog evidence |
 | `test_intent.py`, `test_intent_claude.py`, `test_intent_eval.py` | the catalog check and ceiling; the exact Claude API request, checked offline; the grading rules and the dataset |
 | `test_examples.py` | every example still runs |
 
@@ -267,7 +273,7 @@ tests/                 one file per area; see below
 - **The database is not tamper-evident.** Warrants are signed, so editing one is caught; but a deleted *action* row leaves no trace. A hash-chained, append-only log is planned (M7).
 - **The intent compiler has not been measured live yet.** It is built and tested offline; the 50-case eval needs an Anthropic API key, and its labels were drafted by Claude, so a person should review them before any score is quoted.
 - **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
-- **Plain-English constraints still need a Check to be tested.** The intent compiler doesn't write Checks yet, and a condition that can't be expressed as one waits for the semantic judge (M4).
+- **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition waits for the semantic judge (M4).
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
 - **Generator functions cannot be agents or tools yet** — the warrant would leak between yields. Clear error if tried.
 - **MCP trust is single-organisation.** A server must hold the same key as the client.

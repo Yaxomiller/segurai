@@ -6,6 +6,7 @@
     warrant creep <session_id>       granted vs exercised scope
     warrant keygen                   create a signing key
     warrant collect                  receive spans from agents over OTLP/HTTP
+    warrant ui                       browse sessions in a web page
     warrant intent "<request>"       compile a request into a scope contract
     warrant eval-intent              grade the intent compiler on labeled cases
     warrant eval-tier1               run the Tier 1 scenario suite (no API calls)
@@ -183,6 +184,34 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    """Serve the read-only web view of a database. It accepts spans too, like collect."""
+    from .collector.server import CollectorServer
+
+    store = _store(args)
+    key_path = _find_key(args)
+    verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
+    token = args.token or os.environ.get("WARRANT_COLLECTOR_TOKEN")
+
+    server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
+    host, port = server.server_address[:2]
+    print(f"warrant ui: open http://{host}:{port}/   (database: {args.db})")
+    if verifier is None:
+        print("  signatures will show as not checked: no key beside the database (pass --key)")
+    if token:
+        print("  log in with any user name and the token as the password")
+    elif args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("  WARNING: listening beyond this machine with no token (set WARRANT_COLLECTOR_TOKEN)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print()
+        print("stopping")
+    finally:
+        server.server_close()
+    return 0
+
+
 def _compiler(args: argparse.Namespace):
     from .intent import Catalog, ClaudeBackend, IntentCompiler
 
@@ -303,6 +332,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--token", default=None,
                    help="require this bearer token (prefer the WARRANT_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_collect)
+
+    s = sub.add_parser("ui", help="browse sessions in a web page")
+    s.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
+    s.add_argument("--port", type=int, default=8700, help="port (default: 8700)")
+    s.add_argument("--token", default=None,
+                   help="require this password (prefer the WARRANT_COLLECTOR_TOKEN variable)")
+    s.set_defaults(func=cmd_ui)
 
     def add_model_options(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--catalog", required=True, help="catalog JSON of operations and resources")

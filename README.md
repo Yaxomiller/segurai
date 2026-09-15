@@ -25,6 +25,8 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 
 - One Claude call turns a request into a scope contract (structured output, cached instructions, refusal fallbacks)
 - Contracts are checked against the organisation's catalog and clamped to the person's real permissions
+- Conditions that the catalog's evidence can test are written as Checks automatically
+- A read-only web view: the request and contract beside the chain, findings inline, signatures re-verified on every load
 - 50 labeled eval cases and a grading harness; running them needs an Anthropic API key
 
 **M2 — Tier 1 check suite: complete.**
@@ -211,6 +213,14 @@ warrant collect --db central.db --key org.pub --port 4318
 
 The collector rebuilds every chain and re-checks every signature with the organisation's public key, refusing anything forged.
 
+## Web view
+
+```bash
+warrant ui --db warrant.db        # then open http://127.0.0.1:8700/
+```
+
+One page per session: the request and its contract beside the delegation chain, every action's findings inline, and the signatures re-checked each time the page loads. It is plain HTML with no scripts; everything from a request is escaped, and pages carry a strict Content-Security-Policy. With `WARRANT_COLLECTOR_TOKEN` set, the browser asks for the token as a password. The collector serves the same pages at `/`.
+
 ## CLI
 
 ```bash
@@ -220,6 +230,7 @@ warrant verify <session_id>   # re-check every signature, link and narrowing
 warrant creep <session_id>    # granted vs exercised scope
 warrant keygen                # create a signing key
 warrant collect               # receive spans from agents (OTLP/HTTP)
+warrant ui                    # browse sessions in a web page
 warrant intent "<request>"    # compile a request into a scope contract
 warrant eval-intent ...       # grade the intent compiler on labeled cases
 warrant eval-tier1            # run the Tier 1 scenario suite (no API calls)

@@ -15,29 +15,115 @@
     "deploy": "deploy or roll back software"
   },
   "resources": {
-    "crm.accounts": "customer companies",
-    "crm.contacts": "people at customer companies",
-    "crm.opportunities": "sales deals",
-    "crm.leads": "prospective customers not yet qualified",
+    "crm.accounts": {
+      "description": "customer companies",
+      "evidence": {
+        "account_status": "active, churned or prospect",
+        "days_since_login": "number: days since anyone at the customer logged in"
+      }
+    },
+    "crm.contacts": {
+      "description": "people at customer companies",
+      "evidence": {
+        "days_since_updated": "number: days since the contact record changed",
+        "is_duplicate": "yes or no"
+      }
+    },
+    "crm.opportunities": {
+      "description": "sales deals",
+      "evidence": {
+        "days_since_activity": "number: days since the deal last had any activity",
+        "account_status": "the customer's status: active, churned or prospect"
+      }
+    },
+    "crm.leads": {
+      "description": "prospective customers not yet qualified",
+      "evidence": {
+        "created_by": "who or what created the lead, e.g. qa-script"
+      }
+    },
     "crm.notes": "notes attached to CRM records",
-    "billing.invoices": "invoices sent to customers",
+    "billing.invoices": {
+      "description": "invoices sent to customers",
+      "evidence": {
+        "status": "draft, open, paid or void",
+        "amount": "number: invoice total in dollars",
+        "days_overdue": "number: days past the due date"
+      }
+    },
     "billing.subscriptions": "customer subscription plans",
     "billing.payments": "payments received from customers",
-    "billing.refunds": "refunds issued to customers",
-    "support.tickets": "customer support tickets",
+    "billing.refunds": {
+      "description": "refunds issued to customers",
+      "evidence": {
+        "amount": "number: refund amount in dollars"
+      }
+    },
+    "support.tickets": {
+      "description": "customer support tickets",
+      "evidence": {
+        "priority": "low, normal, high or urgent",
+        "status": "open, pending_customer, solved or closed",
+        "days_waiting": "number: days since the last reply"
+      }
+    },
     "support.macros": "saved reply templates for support agents",
     "hr.employees": "employee records",
     "hr.payroll": "salary and payroll records",
     "hr.time_off": "time-off requests",
-    "email.messages": "sent and received email",
-    "email.drafts": "unsent draft emails",
-    "calendar.events": "calendar meetings and events",
-    "chat.messages": "team chat messages and channels",
+    "email.messages": {
+      "description": "sent and received email",
+      "evidence": {
+        "sender": "who sent the message",
+        "days_old": "number: age of the message in days"
+      }
+    },
+    "email.drafts": {
+      "description": "unsent draft emails",
+      "evidence": {
+        "days_old": "number: days since the draft was last edited",
+        "owner": "email address of the person who owns the draft"
+      }
+    },
+    "calendar.events": {
+      "description": "calendar meetings and events",
+      "evidence": {
+        "days_since_attended": "number: days since anyone attended",
+        "recurring": "yes or no"
+      }
+    },
+    "chat.messages": {
+      "description": "team chat messages and channels",
+      "evidence": {
+        "channel": "channel name, e.g. #random",
+        "days_old": "number: age of the message in days"
+      }
+    },
     "files.documents": "documents in the company drive",
-    "files.shared_links": "share links to documents",
-    "analytics.reports": "saved analytics reports",
-    "analytics.dashboards": "analytics dashboards",
+    "files.shared_links": {
+      "description": "share links to documents",
+      "evidence": {
+        "visibility": "public, organisation or restricted"
+      }
+    },
+    "analytics.reports": {
+      "description": "saved analytics reports",
+      "evidence": {
+        "days_since_opened": "number: days since anyone opened the report"
+      }
+    },
+    "analytics.dashboards": {
+      "description": "analytics dashboards",
+      "evidence": {
+        "days_since_viewed": "number: days since anyone viewed the dashboard"
+      }
+    },
     "infra.deployments": "software deployments",
-    "infra.feature_flags": "feature flags controlling product behaviour"
+    "infra.feature_flags": {
+      "description": "feature flags controlling product behaviour",
+      "evidence": {
+        "environment": "production or staging"
+      }
+    }
   }
 }
