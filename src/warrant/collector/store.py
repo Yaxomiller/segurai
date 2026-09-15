@@ -88,6 +88,22 @@ CREATE INDEX IF NOT EXISTS idx_observed_trace ON observed_spans(trace_id);
 CREATE TABLE IF NOT EXISTS warrant_traces (
     trace_id        TEXT PRIMARY KEY
 );
+
+-- Tier 2 verdicts: the judge's view of flagged actions, kept BESIDE the
+-- Tier 1 record in the actions table, never instead of it.
+CREATE TABLE IF NOT EXISTS verdicts (
+    action_id       TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    verdict         TEXT NOT NULL,
+    confidence      TEXT NOT NULL,
+    reasoning       TEXT NOT NULL,
+    clause          TEXT,
+    model           TEXT,
+    prompt_version  TEXT,
+    judged_at       TEXT NOT NULL,
+    latency_ms      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_verdicts_session ON verdicts(session_id);
 """
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -239,20 +255,52 @@ class Store:
         )
 
     def actions_for_session(self, session_id: str) -> list[ActionRecord]:
-        rows = self._read("SELECT * FROM actions WHERE session_id = ? ORDER BY at", (session_id,))
+        """A session's actions in the order they were recorded.
+
+        Ties in time (two actions in the same instant) fall back to insertion
+        order, so "what came before" is always well defined.
+        """
+        rows = self._read("SELECT * FROM actions WHERE session_id = ? ORDER BY at, rowid", (session_id,))
         return [_row_to_action(r) for r in rows]
 
     def violations(self, session_id: str | None = None) -> list[ActionRecord]:
         if session_id:
             rows = self._read(
-                "SELECT * FROM actions WHERE allowed = 0 AND session_id = ? ORDER BY at",
+                "SELECT * FROM actions WHERE allowed = 0 AND session_id = ? ORDER BY at, rowid",
                 (session_id,),
             )
         else:
-            rows = self._read("SELECT * FROM actions WHERE allowed = 0 ORDER BY at")
+            rows = self._read("SELECT * FROM actions WHERE allowed = 0 ORDER BY at, rowid")
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    # ---- verdicts (Tier 2) ---------------------------------------------
+
+    def put_verdict(self, verdict) -> None:
+        """Store a judge's Verdict. Judging an action again replaces its old verdict."""
+        d = verdict.to_dict()
+        self._write(
+            "INSERT OR REPLACE INTO verdicts VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (d["action_id"], d["session_id"], d["verdict"], d["confidence"], d["reasoning"],
+             d["clause"], d["model"], d["prompt_version"], d["judged_at"], d["latency_ms"]),
+        )
+
+    def verdicts_for_session(self, session_id: str) -> dict:
+        """The session's verdicts, keyed by action id."""
+        # Imported here, not at the top: the judge module itself imports this one.
+        from ..judge.judge import Verdict
+
+        rows = self._read("SELECT * FROM verdicts WHERE session_id = ?", (session_id,))
+        return {
+            r["action_id"]: Verdict(
+                action_id=r["action_id"], session_id=r["session_id"], verdict=r["verdict"],
+                confidence=r["confidence"], reasoning=r["reasoning"], clause=r["clause"] or "",
+                model=r["model"], prompt_version=r["prompt_version"] or "",
+                judged_at=datetime.fromisoformat(r["judged_at"]), latency_ms=r["latency_ms"],
+            )
+            for r in rows
+        }
 
     # ---- observed spans (zero-integration ingest) ----------------------
 

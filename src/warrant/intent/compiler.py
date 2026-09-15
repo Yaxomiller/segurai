@@ -17,7 +17,8 @@ How one compile works:
     ScopeContract  ->  catalog check (contract.py)  ->  CompiledIntent
 
 The call goes through a "backend" object with one method, ``complete``. The
-real one is ClaudeBackend; tests use a fake one, so everything except the
+real one is ClaudeBackend (the call itself lives in warrant/_claude.py,
+shared with the Tier 2 judge); tests use a fake one, so everything except the
 network call can be tested for free.
 
 Model: Claude Opus 5 by default. On a safety refusal the API can re-run the
@@ -31,6 +32,14 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Protocol
 
+from .._claude import (
+    DEFAULT_MODEL,
+    FALLBACK_BETA,
+    ModelCallError,
+    ModelRefusal,
+    default_client,
+    structured_call,
+)
 from ..models import CHECK_OPS, Scope
 from .contract import Catalog, ScopeContract
 
@@ -44,11 +53,6 @@ __all__ = [
 #: which version of the prompt produced them.
 #: v2: contracts include checks built from the catalog's evidence fields.
 PROMPT_VERSION = "intent-v2"
-
-DEFAULT_MODEL = "claude-opus-5"
-
-#: Beta flag for server-side refusal fallbacks in their "default" form.
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
 class IntentError(RuntimeError):
@@ -235,88 +239,19 @@ class ClaudeBackend:
         self.last_model: str | None = None   # which model actually answered (a fallback may have)
         self.last_usage: Any = None          # token counts of the last call, including cache hits
 
-    def _anthropic(self) -> Any:
-        try:
-            import anthropic
-        except ImportError as exc:
-            raise IntentError("the intent compiler needs: pip install 'warrant-provenance[intent]'") from exc
-        return anthropic
-
-    def _get_client(self) -> Any:
-        if self._client is None:
-            anthropic = self._anthropic()
-            try:
-                self._client = anthropic.Anthropic()
-            except anthropic.AnthropicError as exc:
-                raise IntentError(f"could not create an Anthropic client ({exc}); set ANTHROPIC_API_KEY") from exc
-        return self._client
-
     def complete(self, system: str, request: str, catalog: Catalog) -> dict[str, Any]:
-        anthropic = self._anthropic()
-        client = self._get_client()
-
-        params: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            # cache_control marks the instructions + catalog as reusable: the
-            # API stores that prefix and later calls read it at a fraction of
-            # the normal input price.
-            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            "messages": [{"role": "user", "content": wrap_request(request)}],
-            "output_format": _output_model(catalog.operation_names),
-        }
-        if self.effort is not None:
-            params["output_config"] = {"effort": self.effort}
-        if self.fallbacks:
-            params["betas"] = [FALLBACK_BETA]
-            params["fallbacks"] = "default"
-
-        # Most specific errors first: a bad key or a bad request will not fix
-        # itself, while rate limits and outages might (the SDK already retried
-        # those twice before raising).
         try:
-            # with_raw_response hands back the HTTP reply BEFORE it is parsed
-            # into a contract. That matters: a reply cut off halfway through
-            # its JSON would otherwise fail parsing with a confusing schema
-            # error, when the real reason - why generation stopped - is right
-            # there in the reply.
-            raw = client.beta.messages.with_raw_response.parse(**params)
-        except anthropic.AuthenticationError as exc:
-            raise IntentError("the Anthropic API rejected the credentials; check ANTHROPIC_API_KEY") from exc
-        except anthropic.BadRequestError as exc:
-            raise IntentError(f"the Anthropic API rejected the request: {exc.message}") from exc
-        except anthropic.RateLimitError as exc:
-            raise IntentError("rate limited by the Anthropic API; try again shortly") from exc
-        except anthropic.APIStatusError as exc:
-            raise IntentError(f"Anthropic API error {exc.status_code}: {exc.message}") from exc
-        except anthropic.APIConnectionError as exc:
-            raise IntentError("could not reach the Anthropic API") from exc
-        except TypeError as exc:
-            # When it finds no credentials at all (no key, token or login
-            # profile) the SDK raises a TypeError rather than an API error.
-            # Any other TypeError is a real bug and must not be disguised.
-            if "authentication" not in str(exc).lower():
-                raise
-            raise IntentError("no Anthropic credentials found; set ANTHROPIC_API_KEY") from exc
-
-        body = raw.http_response.json()
-        self.last_model = body.get("model")
-        self.last_usage = body.get("usage")
-
-        # Check why generation stopped BEFORE reading the content: a refusal
-        # carries no contract, and a cut-off reply carries half of one.
-        stop_reason = body.get("stop_reason")
-        if stop_reason == "refusal":
-            details = body.get("stop_details") or {}
-            raise IntentRefused(details.get("category"))
-        if stop_reason == "max_tokens":
-            raise IntentError("the model's answer was cut off; raise max_tokens")
-
-        try:
-            response = raw.parse()
-        except ValueError as exc:  # a reply that does not validate against the schema
-            raise IntentError(f"the model's reply did not match the contract schema: {exc}") from exc
-        parsed = getattr(response, "parsed_output", None)
-        if parsed is None:
-            raise IntentError("the model returned no structured contract")
-        return parsed.model_dump()
+            if self._client is None:
+                self._client = default_client("intent")
+            answer, facts = structured_call(
+                self._client, model=self.model, system=system, user=wrap_request(request),
+                output_model=_output_model(catalog.operation_names), effort=self.effort,
+                fallbacks=self.fallbacks, max_tokens=self.max_tokens, extra="intent",
+            )
+        except ModelRefusal as exc:
+            raise IntentRefused(exc.category) from exc
+        except ModelCallError as exc:
+            raise IntentError(str(exc)) from exc
+        self.last_model = facts["model"]
+        self.last_usage = facts["usage"]
+        return answer

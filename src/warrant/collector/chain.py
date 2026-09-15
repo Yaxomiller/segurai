@@ -97,6 +97,7 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
     by_warrant: dict[str, list[ActionRecord]] = defaultdict(list)
     for a in actions:
         by_warrant[a.warrant_id].append(a)
+    verdicts = store.verdicts_for_session(session_id)
 
     lines: list[str] = [
         f"Session {sess.session_id}",
@@ -142,6 +143,11 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
             elif not a.allowed:
                 # Records made before findings existed carry only the reason.
                 lines.append(f"{child_prefix}             -> {a.violation}")
+            verdict = verdicts.get(a.action_id)
+            if verdict is not None:
+                # Tier 2's view sits beside Tier 1's record; it never replaces it.
+                lines.append(f"{child_prefix}             judge: {verdict.verdict} "
+                             f"({verdict.confidence}) - {verdict.reasoning}")
         kids = children.get(w.warrant_id, [])
         for i, k in enumerate(kids):
             walk(k, child_prefix, i == len(kids) - 1)

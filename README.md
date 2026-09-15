@@ -41,6 +41,12 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - CI on Linux, Windows and macOS across Python 3.10–3.13, plus packaging checks
 - Still to do: publishing to PyPI and a public repository (both need the maintainer's accounts)
 
+**M4 — Tier 2 semantic judge: built, first live eval pending.**
+
+- Reviews only the actions Tier 1 flagged, one narrow question each: within intent, outside intent, or needs a human
+- Verdicts sit beside Tier 1's record — advice, never authority — and agent-written text is treated as untrusted data
+- 50 labeled cases (27 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
+
 ## Install
 
 ```bash
@@ -49,6 +55,7 @@ pip install -e ".[langgraph]"    # + LangGraph integration
 pip install -e ".[mcp]"          # + MCP integration
 pip install -e ".[otel]"         # + OpenTelemetry spans
 pip install -e ".[intent]"       # + intent compiler (Anthropic SDK)
+pip install -e ".[judge]"        # + Tier 2 judge (Anthropic SDK)
 pip install -e ".[collector]"    # + collector protobuf support
 pip install -e ".[dev]"          # everything, plus pytest
 ```
@@ -219,6 +226,16 @@ The collector rebuilds every chain and re-checks every signature with the organi
 
 **Already using OpenTelemetry? Try it with no code changes.** Point your existing exporter at the collector. Standard GenAI spans (`invoke_agent`, `execute_tool`) from any framework are rebuilt into an *observed* chain: which agent called which tool, and for whom. Observed chains are clearly labeled — nothing in them was authorized, signed or checked — so they show where warrants would go before you adopt them.
 
+## Semantic judge (Tier 2)
+
+Tier 1 is exact but can only compare. For the actions it flags, the judge asks Claude one narrow question: given what this person asked for, is this action within intent, outside it, or does a person need to decide?
+
+```bash
+warrant judge <session_id> --yes      # judge the session's flagged actions
+```
+
+Verdicts are stored beside Tier 1's findings and shown in `warrant show` and the web view; they never change Tier 1's record. Everything the judge reads from agents and tools is treated as untrusted data, so "this was pre-approved" written by an agent grants nothing. Measure it with `warrant eval-judge` on 50 labeled cases (see [evals/tier2/](evals/tier2/README.md)).
+
 ## Web view
 
 ```bash
@@ -240,6 +257,8 @@ warrant ui                    # browse sessions in a web page
 warrant intent "<request>"    # compile a request into a scope contract
 warrant eval-intent ...       # grade the intent compiler on labeled cases
 warrant eval-tier1            # run the Tier 1 scenario suite (no API calls)
+warrant judge <session_id>    # Tier 2: judge a session's flagged actions
+warrant eval-judge            # grade the judge on labeled cases
 ```
 
 `--db` picks the database (default `warrant.db`); the key is found beside it.
@@ -271,7 +290,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M1 | Intent compiler — built; first live eval run pending |
 | M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
-| M4 | Tier 2 semantic judge for flagged actions |
+| M4 | Tier 2 semantic judge — built; first live eval pending |
 | M5 | Design-partner pilots |
 | M6 | Scope-creep report |
 

@@ -35,6 +35,14 @@ The first public release: milestones M0 to M2, plus the intent compiler (M1).
 - `max_total` caps the records changed across a whole session.
 - 20 seeded scenarios: 10 of 10 violations caught for the right reason, 0 of 10 false positives, 0.15 ms per checked action at p99. Run them with `warrant eval-tier1`.
 
+### Tier 2 judge (M4)
+
+- For actions Tier 1 flagged, one Claude call decides `within_intent`, `outside_intent` or `needs_human`, with a confidence, a plain reason and the clause it turns on. It is shown the request, contract, chain, action, findings and recent history.
+- Verdicts are stored beside Tier 1's findings and never change them. Agent-written text is passed as data inside tags it cannot close.
+- Run it with `warrant judge <session>` (the paid call needs `--yes`), or live with `JudgeListener`.
+- 50 labeled cases, 27 of them ambiguous and 3 with planted prompt injection. `warrant eval-judge` scores agreement and dangerous misses against the M4 target.
+- The intent compiler and the judge now share one structured Claude call (`_claude.py`).
+
 ### Zero-integration path
 
 - The collector rebuilds existing OpenTelemetry GenAI spans (`invoke_agent`, `execute_tool`) from any framework into an observed chain per trace, with no warrant code involved. Spans may arrive in any order.

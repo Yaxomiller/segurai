@@ -37,7 +37,8 @@ langgraph = ["langgraph>=1.0"]
 mcp = ["mcp>=2.0"]
 collector = ["opentelemetry-proto>=1.30"]
 intent = ["anthropic>=1.5"]
-all = ["warrant-provenance[otel,langgraph,mcp,collector,intent]"]
+judge = ["anthropic>=1.5"]
+all = ["warrant-provenance[otel,langgraph,mcp,collector,intent,judge]"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",

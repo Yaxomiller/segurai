@@ -194,7 +194,7 @@ def _verification_html(store: Store, warrants: list[Warrant], verifier: Authorit
             f"(<code>{_e(verifier.key_id)}</code>), links and narrowing intact.</p>")
 
 
-def _action_html(a: ActionRecord) -> str:
+def _action_html(a: ActionRecord, verdict: Any = None) -> str:
     if a.allowed:
         cls, label = "ok", "ok"
     elif a.blocked:
@@ -211,10 +211,15 @@ def _action_html(a: ActionRecord) -> str:
             out.append(f"<div class='finding mono unk'>? {_e(f.reason)}</div>")
     if not a.findings and not a.allowed:
         out.append(f"<div class='finding mono fail'>&#x2717; {_e(a.violation)}</div>")
+    if verdict is not None:
+        # Tier 2's verdict is shown beside Tier 1's findings, never instead of them.
+        tone = {"within_intent": "ok", "outside_intent": "fail"}.get(verdict.verdict, "unk")
+        out.append(f"<div class='finding {tone}'><strong>judge: {_e(verdict.verdict)}</strong> "
+                   f"({_e(verdict.confidence)}) &mdash; {_e(verdict.reasoning)}</div>")
     return "".join(out)
 
 
-def _agent_html(w: Warrant, children: dict, by_warrant: dict) -> str:
+def _agent_html(w: Warrant, children: dict, by_warrant: dict, verdicts: dict) -> str:
     s = w.scope
     summary = (f"ops {', '.join(sorted(s.operations)) or '-'} &middot; targets "
                f"{_e(', '.join(sorted(s.targets)) or '-')}"
@@ -223,10 +228,10 @@ def _agent_html(w: Warrant, children: dict, by_warrant: dict) -> str:
     parts = [f"<li class='agent'><strong>{_e(w.holder)}</strong> "
              f"<span class='muted mono'>{_e(w.warrant_id)}</span>"
              f"<div class='muted mono'>{summary}</div>"]
-    parts += [_action_html(a) for a in by_warrant.get(w.warrant_id, [])]
+    parts += [_action_html(a, verdicts.get(a.action_id)) for a in by_warrant.get(w.warrant_id, [])]
     kids = children.get(w.warrant_id, [])
     if kids:
-        parts.append("<ul>" + "".join(_agent_html(k, children, by_warrant) for k in kids) + "</ul>")
+        parts.append("<ul>" + "".join(_agent_html(k, children, by_warrant, verdicts) for k in kids) + "</ul>")
     parts.append("</li>")
     return "".join(parts)
 
@@ -261,7 +266,8 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
 
     violations = sum(1 for a in actions if not a.allowed)
     unverifiable = sum(1 for a in actions for f in a.findings if f.status == "unverifiable")
-    tree = "<ul class='tree'>" + "".join(_agent_html(r, children, by_warrant) for r in roots) + "</ul>"
+    verdicts = store.verdicts_for_session(session_id)
+    tree = "<ul class='tree'>" + "".join(_agent_html(r, children, by_warrant, verdicts) for r in roots) + "</ul>"
     right = (f"<div class='card'><h2>Delegation chain</h2>"
              f"<p class='muted'>{len(warrants)} warrants &middot; {len(actions)} actions &middot; "
              f"<span class='{'fail' if violations else 'ok'}'>{violations} violation(s)</span>"

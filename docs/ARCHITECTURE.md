@@ -117,6 +117,28 @@ Every action is checked against the scope of the warrant it runs under, in micro
 
 ---
 
+## Tier 2: the semantic judge
+
+Tier 1 can only compare. It flags an archive because one deal was "active 12 days ago", when that activity may have been an automated sync; and when evidence is missing it can only say "unverifiable". For those actions, and only those, the judge ([`judge/`](../src/warrant/judge/)) asks Claude one narrow question, with everything relevant in front of it: the request and contract, the chain and its scopes, the action and what it reported, the findings, and the ten actions before it.
+
+| Verdict | Meaning |
+|---|---|
+| `within_intent` | what the person wanted, even though the check flagged it |
+| `outside_intent` | beyond, against or around what the person asked for |
+| `needs_human` | not enough to tell, or reasonable people would disagree |
+
+Three rules keep it honest:
+
+- **Only flagged actions.** Clean actions never reach it, so cost and latency grow with problems, not traffic.
+- **Advice, not authority.** A verdict is stored beside Tier 1's findings and never changes them. A FAIL judged `within_intent` still shows as FAIL, with the judge's reasoning next to it.
+- **Agent text is data.** What agents reported is passed as JSON inside tags it cannot close, and the instructions say plainly that an agent's claim of approval is not approval. Three eval cases plant exactly that.
+
+Run it after a session with `warrant judge <session>`, or live with `JudgeListener` (the agent then waits for each verdict). It uses Claude Opus 5 at low effort for speed, through the same call as the intent compiler ([`_claude.py`](../src/warrant/_claude.py)).
+
+**Measuring it:** [`evals/tier2/`](../evals/tier2/README.md) holds 50 labeled cases, 27 of them ambiguous. `warrant eval-judge` reports agreement on the ambiguous ones (target 85%) and *dangerous misses*, meaning an outside-intent action judged within intent, which must be zero.
+
+---
+
 ## Where the root scope comes from
 
 A session's root scope says what the person authorized. It is either written by hand (`scope=...`) or derived from the request text by the **intent compiler** ([`intent/`](../src/warrant/intent/)).
@@ -231,6 +253,7 @@ src/warrant/
   runtime.py           session, agent, delegate, act, tool, configure, listeners
   scenarios.py         the Tier 1 scenario suite (M2)
   cli.py               the `warrant` command
+  _claude.py           the one structured Claude call shared by intent and judge
   collector/
     store.py           SQLite storage and migrations
     chain.py           tree reconstruction and rendering
@@ -241,6 +264,9 @@ src/warrant/
     contract.py        Catalog and ScopeContract; catalog check, fail-closed scale
     compiler.py        IntentCompiler and the Claude backend
     eval.py            grading the compiler against labeled cases
+  judge/
+    judge.py           Judge, Verdict, what the judge is shown, live listener
+    eval.py            grading the judge against labeled cases
   instrument/
     otel.py            OpenTelemetry spans
     langgraph.py       LangGraph nodes and ToolNode
@@ -248,6 +274,7 @@ src/warrant/
 examples/              runnable demos (no API keys needed)
 evals/intent/          the intent compiler's catalog and 50 labeled cases
 evals/tier1/           20 seeded scenarios for the Tier 1 check
+evals/tier2/           50 labeled cases for the Tier 2 judge
 tests/                 one file per area; see below
 ```
 
@@ -265,6 +292,7 @@ tests/                 one file per area; see below
 | `test_collector.py` | spans from the real OpenTelemetry exporter rebuild a verified chain; forged, oversized and unauthorised input is refused |
 | `test_web.py`, `test_intent_checks.py` | the web view escapes request text, shows findings and failed verification, and requires the token; compiled checks are validated against catalog evidence |
 | `test_observed.py` | ordinary OpenTelemetry GenAI spans, arriving in any order, rebuild an observed chain labeled as unchecked |
+| `test_judge.py`, `test_judge_eval.py` | which actions the judge sees and what it is shown, that verdicts never change Tier 1's record, the exact Claude request offline; the eval set and its dangerous-miss scoring |
 | `test_intent.py`, `test_intent_claude.py`, `test_intent_eval.py` | the catalog check and ceiling; the exact Claude API request, checked offline; the grading rules and the dataset |
 | `test_examples.py` | every example still runs |
 
@@ -274,9 +302,10 @@ tests/                 one file per area; see below
 
 - **The signing key sits with the agent process.** Fine for development; in production an agent that holds the key could mint itself anything. Moving signing into a separate collector is a later milestone.
 - **The database is not tamper-evident.** Warrants are signed, so editing one is caught; but a deleted *action* row leaves no trace. A hash-chained, append-only log is planned (M7).
-- **The intent compiler has not been measured live yet.** It is built and tested offline; the 50-case eval needs an Anthropic API key, and its labels were drafted by Claude, so a person should review them before any score is quoted.
+- **Neither the intent compiler nor the judge has been measured live.** Both are built and tested offline. Their eval sets need an Anthropic API key to run, and both were labeled by Claude, so people should review the labels before any score is quoted.
+- **The judge's two-second latency target is unmeasured.** It can only be checked against the live API.
 - **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
-- **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition waits for the semantic judge (M4).
+- **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition can only be weighed by the Tier 2 judge.
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
 - **Generator functions cannot be agents or tools yet** — the warrant would leak between yields. Clear error if tried.
 - **MCP trust is single-organisation.** A server must hold the same key as the client.

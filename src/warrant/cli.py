@@ -10,6 +10,8 @@
     warrant intent "<request>"       compile a request into a scope contract
     warrant eval-intent              grade the intent compiler on labeled cases
     warrant eval-tier1               run the Tier 1 scenario suite (no API calls)
+    warrant judge <session_id>       Tier 2: judge a session's flagged actions
+    warrant eval-judge               grade the Tier 2 judge on labeled cases
 
 ``--db`` selects the store, defaulting to ./warrant.db. The signing key is
 looked for beside it (warrant.db -> warrant.key / warrant.pub) unless
@@ -282,6 +284,64 @@ def cmd_eval_tier1(args: argparse.Namespace) -> int:
     return 0 if report.meets_target else 1
 
 
+def cmd_judge(args: argparse.Namespace) -> int:
+    """Judge every flagged action in a session that has no verdict yet (one API call each)."""
+    from .judge import ClaudeJudgeBackend, Judge, JudgeError, needs_review
+
+    store = _store(args)
+    if store.get_session(args.session_id) is None:
+        print(f"No such session: {args.session_id}")
+        return 1
+    already = set() if args.rejudge else set(store.verdicts_for_session(args.session_id))
+    pending = [a for a in store.actions_for_session(args.session_id)
+               if needs_review(a) and a.action_id not in already]
+    if not pending:
+        print("Nothing to judge: every flagged action already has a verdict (use --rejudge to redo).")
+        return 0
+    if not args.yes:
+        print(f"This makes {len(pending)} call(s) to {args.model} on your Anthropic account, "
+              f"which costs money. Re-run with --yes to go ahead.")
+        return 2
+
+    judge = Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort))
+    failures = 0
+    for record in pending:
+        try:
+            verdict = judge.review_action(store, record)
+        except JudgeError as exc:
+            failures += 1
+            print(f"  could not judge {record.actor}: {record.operation} {record.resource} - {exc}")
+            continue
+        print(f"  {verdict.verdict:<15} ({verdict.confidence}) {record.actor}: "
+              f"{record.operation} {record.resource} - {verdict.reasoning}")
+    return 1 if failures else 0
+
+
+def cmd_eval_judge(args: argparse.Namespace) -> int:
+    """Grade the judge on labeled cases against the M4 target."""
+    from .judge import ClaudeJudgeBackend, Judge
+    from .judge.eval import load_cases, run_eval
+
+    cases = load_cases(args.cases)
+    if args.limit:
+        cases = cases[: args.limit]
+    if not args.yes:
+        print(f"This makes {len(cases)} calls to {args.model} on your Anthropic account, "
+              f"which costs money. Re-run with --yes to go ahead.")
+        return 2
+
+    def progress(i, n, result):
+        mark = "error" if result.error else ("agree" if result.agree else "differ")
+        print(f"  [{i}/{n}] {mark:6} {result.case_id}")
+
+    report = run_eval(Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort)), cases, progress)
+    print()
+    print(report.to_markdown())
+    if args.out:
+        Path(args.out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+    return 0 if report.meets_target else 1
+
+
 def _never_crash_on_unprintable_text() -> None:
     """Replace characters the terminal cannot show instead of raising.
 
@@ -364,6 +424,24 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--scenarios", default="evals/tier1/scenarios.json")
     s.add_argument("--out", default=None, help="write full JSON results here")
     s.set_defaults(func=cmd_eval_tier1)
+
+    efforts = ["low", "medium", "high", "xhigh", "max"]
+    s = sub.add_parser("judge", help="Tier 2: judge a session's flagged actions (calls Claude)")
+    s.add_argument("session_id")
+    s.add_argument("--rejudge", action="store_true", help="judge again where a verdict exists")
+    s.add_argument("--yes", action="store_true", help="confirm the paid API calls")
+    s.add_argument("--model", default="claude-opus-5")
+    s.add_argument("--effort", default="low", choices=efforts)
+    s.set_defaults(func=cmd_judge)
+
+    s = sub.add_parser("eval-judge", help="grade the Tier 2 judge on labeled cases (calls Claude)")
+    s.add_argument("--cases", default="evals/tier2/cases.jsonl")
+    s.add_argument("--limit", type=int, default=0, help="only the first N cases")
+    s.add_argument("--yes", action="store_true", help="confirm the paid API calls")
+    s.add_argument("--out", default=None, help="write full JSON results here")
+    s.add_argument("--model", default="claude-opus-5")
+    s.add_argument("--effort", default="low", choices=efforts)
+    s.set_defaults(func=cmd_eval_judge)
 
     args = p.parse_args(argv)
     return args.func(args)
