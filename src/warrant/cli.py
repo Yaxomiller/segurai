@@ -5,6 +5,9 @@
     warrant verify <session_id>      check every chain in a session
     warrant creep <session_id>       granted vs exercised scope
     warrant keygen                   create a signing key
+    warrant collect                  receive spans from agents over OTLP/HTTP
+    warrant intent "<request>"       compile a request into a scope contract
+    warrant eval-intent              grade the intent compiler on labeled cases
 
 ``--db`` selects the store, defaulting to ./warrant.db. The signing key is
 looked for beside it (warrant.db -> warrant.key / warrant.pub) unless
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -148,6 +152,94 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_collect(args: argparse.Namespace) -> int:
+    from .collector.server import CollectorServer
+
+    store = _store(args)
+    key_path = _find_key(args)
+    verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
+    # Prefer the environment variable: a token on the command line is visible
+    # to anyone who can list the machine's processes.
+    token = args.token or os.environ.get("WARRANT_COLLECTOR_TOKEN")
+
+    server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
+    host, port = server.server_address[:2]
+    print(f"warrant collector: http://{host}:{port}/v1/traces -> {args.db}")
+    if verifier is not None:
+        print(f"  signatures checked with {verifier.key_id}; forged warrants are refused")
+    else:
+        print("  WARNING: no key found - warrants are stored WITHOUT signature checks (pass --key)")
+    if token:
+        print("  bearer token required")
+    elif args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("  WARNING: listening beyond this machine with no token (set WARRANT_COLLECTOR_TOKEN)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopping")
+    finally:
+        server.server_close()
+    return 0
+
+
+def _compiler(args: argparse.Namespace):
+    from .intent import Catalog, ClaudeBackend, IntentCompiler
+
+    return IntentCompiler(Catalog.load(args.catalog),
+                          ClaudeBackend(model=args.model, effort=args.effort))
+
+
+def cmd_intent(args: argparse.Namespace) -> int:
+    """Compile one request and print the contract (one API call)."""
+    from .intent import IntentError
+
+    try:
+        compiled = _compiler(args).compile(args.request)
+    except IntentError as exc:
+        print(f"Could not compile the request: {exc}")
+        return 1
+    print(json.dumps(compiled.to_record(), indent=2))
+    scope = compiled.scope()
+    print(f"\nRoot scope: ops={sorted(scope.operations)} targets={sorted(scope.targets)} "
+          f"max_scale={scope.max_scale} irreversible_allowed={scope.irreversible_allowed}")
+    return 0
+
+
+def cmd_eval_intent(args: argparse.Namespace) -> int:
+    """Run the labeled intent cases through the compiler and grade them."""
+    from .intent.eval import MILESTONE_TARGET, load_cases, run_eval
+
+    cases = load_cases(args.cases)
+    if args.split != "all":
+        cases = [c for c in cases if c.split == args.split]
+    if args.limit:
+        cases = cases[: args.limit]
+    if not cases:
+        print("No cases selected.")
+        return 1
+
+    # Every case is a paid API call, so running needs an explicit yes.
+    if not args.yes:
+        print(f"This makes {len(cases)} calls to {args.model} on your Anthropic account, "
+              f"which costs money. Re-run with --yes to go ahead.")
+        return 2
+
+    def progress(i, n, result):
+        verdict = "error" if result.error else ("ok" if result.acceptable else "miss")
+        print(f"  [{i}/{n}] {verdict:5} {result.case_id}")
+
+    report = run_eval(_compiler(args), cases, progress=progress)
+    print()
+    print(report.to_markdown())
+    if args.out:
+        Path(args.out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"\nFull results: {args.out}")
+    if args.review_sheet:
+        report.write_review_sheet(args.review_sheet)
+        print(f"Human review sheet: {args.review_sheet}")
+    return 0 if report.acceptable_rate >= MILESTONE_TARGET else 1
+
+
 def _never_crash_on_unprintable_text() -> None:
     """Replace characters the terminal cannot show instead of raising.
 
@@ -191,6 +283,33 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("keygen", help="create a signing key")
     s.add_argument("--force", action="store_true", help="replace an existing key")
     s.set_defaults(func=cmd_keygen)
+
+    s = sub.add_parser("collect", help="receive spans from agents over OTLP/HTTP")
+    s.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
+    s.add_argument("--port", type=int, default=4318, help="port (default: 4318, the OTLP/HTTP port)")
+    s.add_argument("--token", default=None,
+                   help="require this bearer token (prefer the WARRANT_COLLECTOR_TOKEN variable)")
+    s.set_defaults(func=cmd_collect)
+
+    def add_model_options(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--catalog", required=True, help="catalog JSON of operations and resources")
+        parser.add_argument("--model", default="claude-opus-5", help="Claude model (default: claude-opus-5)")
+        parser.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+
+    s = sub.add_parser("intent", help="compile a request into a scope contract (calls Claude)")
+    s.add_argument("request")
+    add_model_options(s)
+    s.set_defaults(func=cmd_intent)
+
+    s = sub.add_parser("eval-intent", help="grade the intent compiler on labeled cases (calls Claude)")
+    s.add_argument("--cases", required=True, help="JSONL file of labeled cases")
+    s.add_argument("--split", default="test", choices=["dev", "test", "all"])
+    s.add_argument("--limit", type=int, default=0, help="only the first N cases")
+    s.add_argument("--yes", action="store_true", help="confirm the paid API calls")
+    s.add_argument("--out", default=None, help="write full JSON results here")
+    s.add_argument("--review-sheet", default=None, help="write a CSV for human review here")
+    add_model_options(s)
+    s.set_defaults(func=cmd_eval_intent)
 
     args = p.parse_args(argv)
     return args.func(args)

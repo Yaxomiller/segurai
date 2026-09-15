@@ -103,9 +103,17 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
         f"  Principal : {sess.principal}",
         f"  Request   : {sess.request!r}",
         f"  Started   : {sess.started_at.isoformat()}",
-        "",
-        "Delegation chain",
     ]
+    # When the scope was compiled from the request, show what it was
+    # understood to mean - that is the yardstick the actions are judged by.
+    compiled = (sess.contract or {}).get("contract") if isinstance(sess.contract, dict) else None
+    if compiled:
+        lines.append(f"  Goal      : {compiled.get('goal', '')}")
+        for constraint in compiled.get("implied_constraints", []):
+            lines.append(f"  Condition : {constraint}")
+        for question in compiled.get("clarifications_needed", []):
+            lines.append(f"  Unclear   : {question}")
+    lines += ["", "Delegation chain"]
 
     roots, children = build_tree(warrants)
 

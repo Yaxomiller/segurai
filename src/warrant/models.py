@@ -343,11 +343,19 @@ class Scope:
         _require_list("operations", operations)
         _require_list("targets", targets)
         new_ops = self.operations & frozenset(operations) if operations is not None else self.operations
-        new_targets = (
-            frozenset(t for t in targets if _target_within(t, self.targets))
-            if targets is not None
-            else self.targets
-        )
+        new_targets = self.targets
+        if targets is not None:
+            kept: set[str] = set()
+            for t in targets:
+                if _target_within(t, self.targets):
+                    kept.add(t)  # already inside this scope: keep it as asked
+                else:
+                    # Asked for more than this scope has (say "crm.*" when only
+                    # "crm.opportunities" is allowed): keep the parts of this
+                    # scope that fall inside the request, instead of dropping
+                    # the request entirely.
+                    kept.update(p for p in self.targets if pattern_covers(t, p))
+            new_targets = frozenset(kept)
         new_scale = self.max_scale
         if max_scale is not None:
             new_scale = max_scale if self.max_scale is None else min(max_scale, self.max_scale)
@@ -363,6 +371,22 @@ class Scope:
             max_scale=new_scale,
             irreversible_allowed=new_irrev,
             constraints=new_constraints,
+        )
+
+    def clamped_to(self, ceiling: "Scope") -> "Scope":
+        """This scope, cut down to fit inside ``ceiling``.
+
+        Used when a scope comes from somewhere untrusted - such as a language
+        model reading a request - and must not exceed what the person is
+        really permitted to do. Anything outside the ceiling is removed;
+        nothing is ever added.
+        """
+        return ceiling.narrow(
+            operations=sorted(self.operations),
+            targets=sorted(self.targets),
+            max_scale=self.max_scale,
+            irreversible_allowed=self.irreversible_allowed,
+            add_constraints=list(self.constraints),
         )
 
     def inherit_unspecified(self, parent: "Scope") -> "Scope":

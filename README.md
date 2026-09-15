@@ -19,8 +19,15 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - Observe mode (record and flag) and enforce mode (stop before it happens)
 - Integrations: **LangGraph** (nodes, subgraphs, ToolNode), **MCP** (client and server), **OpenTelemetry** (GenAI semantic conventions)
 - SQLite storage, chain reconstruction, CLI
+- A collector that receives spans from many processes and re-checks every signature
 
-Next: the intent compiler (M1), which derives the scope from the request text instead of it being written by hand.
+**M1 — intent compiler: built, first live eval pending.**
+
+- One Claude call turns a request into a scope contract (structured output, cached instructions, refusal fallbacks)
+- Contracts are checked against the organisation's catalog and clamped to the person's real permissions
+- 50 labeled eval cases and a grading harness; running them needs an Anthropic API key
+
+Next: the Tier 1 check suite (M2).
 
 ## Install
 
@@ -29,6 +36,8 @@ pip install -e .                 # core: needs only `cryptography`
 pip install -e ".[langgraph]"    # + LangGraph integration
 pip install -e ".[mcp]"          # + MCP integration
 pip install -e ".[otel]"         # + OpenTelemetry spans
+pip install -e ".[intent]"       # + intent compiler (Anthropic SDK)
+pip install -e ".[collector]"    # + collector protobuf support
 pip install -e ".[dev]"          # everything, plus pytest
 ```
 
@@ -149,6 +158,33 @@ otel.enable()
 
 Sessions, agent hops and tool calls become spans named per the OpenTelemetry GenAI conventions (`invoke_workflow`, `invoke_agent`, `execute_tool`), carrying the full signed warrant as `warrant.*` attributes. The chain shows up in whatever tracing backend a team already uses. Full example: [examples/otel_demo.py](examples/otel_demo.py).
 
+## Scopes from requests
+
+Instead of writing the scope by hand, let the intent compiler read the request. One Claude call produces a structured contract, which is checked against your catalog of real operations and resources and clamped to the person's actual permissions — so a request can never grant more than the person already has.
+
+```python
+from warrant.intent import Catalog, IntentCompiler
+
+warrant.configure(store="warrant.db", intent=IntentCompiler(Catalog.load("catalog.json")))
+
+with warrant.session(principal="sarah@company.com",
+                     request="clean up our old sales records",
+                     ceiling=sarahs_permissions) as s:
+    ...
+```
+
+Needs `pip install -e ".[intent]"` and `ANTHROPIC_API_KEY`. Try one request with `warrant intent "clean up our old sales records" --catalog evals/intent/catalog.json`; measure the compiler on 50 labeled cases with `warrant eval-intent` (see [evals/intent/](evals/intent/README.md)).
+
+## Collector
+
+Agents on many machines send spans to one place with the standard OpenTelemetry OTLP exporter:
+
+```bash
+warrant collect --db central.db --key org.pub --port 4318
+```
+
+The collector rebuilds every chain and re-checks every signature with the organisation's public key, refusing anything forged.
+
 ## CLI
 
 ```bash
@@ -157,6 +193,9 @@ warrant show <session_id>     # render the delegation tree (--json, --ascii)
 warrant verify <session_id>   # re-check every signature, link and narrowing
 warrant creep <session_id>    # granted vs exercised scope
 warrant keygen                # create a signing key
+warrant collect               # receive spans from agents (OTLP/HTTP)
+warrant intent "<request>"    # compile a request into a scope contract
+warrant eval-intent ...       # grade the intent compiler on labeled cases
 ```
 
 `--db` picks the database (default `warrant.db`); the key is found beside it.
@@ -183,7 +222,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 
 | Milestone | |
 |---|---|
-| M1 | Intent compiler — derive the scope contract from the request automatically |
+| M1 | Intent compiler — built; first live eval run pending |
 | M2 | Tier 1 check suite, 20 seeded scenarios |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
 | M4 | Tier 2 semantic judge for flagged actions |

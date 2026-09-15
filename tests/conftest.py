@@ -14,5 +14,6 @@ def _isolated_runtime():
     """
     warrant.configure(store=":memory:", authority=warrant.Authority(), mode=warrant.Mode.OBSERVE)
     warrant._runtime.listeners.clear()
+    warrant._runtime.intent = None
     yield
     warrant._runtime.listeners.clear()

@@ -142,6 +142,7 @@ class _Runtime:
         self.authority: Authority | None = None
         self.mode: Mode = Mode.OBSERVE
         self.listeners: list[Listener] = []
+        self.intent: Any = None  # an IntentCompiler, when scopes come from requests
 
     def ensure(self) -> tuple[Store, Authority]:
         """The store and authority, falling back to in-memory ones if unconfigured."""
@@ -175,6 +176,7 @@ def configure(
     authority: Authority | None = None,
     mode: Mode | str = Mode.OBSERVE,
     key: str | Path | None = None,
+    intent: Any = None,
 ) -> None:
     """Point the runtime at a store and an authority, and set the mode.
 
@@ -185,7 +187,12 @@ def configure(
     file path and neither ``authority`` nor ``key`` is given, the key lives
     beside the database (``warrant.db`` -> ``warrant.key``). Keeping the key
     is what lets ``warrant verify`` check signatures in a later run.
+
+    ``intent`` is an ``IntentCompiler``. With one set, ``session()`` can be
+    opened without a scope and derives it from the request text.
     """
+    if intent is not None:
+        _rt.intent = intent
     if isinstance(store, (str, Path)):
         path = str(store)
         if authority is None and key is None and path != ":memory:":
@@ -242,19 +249,41 @@ class Session:
 def session(
     principal: str,
     request: str,
-    scope: Scope,
+    scope: Scope | None = None,
     contract: dict | None = None,
     ttl: timedelta = DEFAULT_TTL,
     session_id: str | None = None,
+    ceiling: Scope | None = None,
 ) -> Iterator[Session]:
     """Open a session from a human request.
 
-    ``scope`` is what the principal is understood to have authorized. At this
-    milestone you pass it explicitly; the intent compiler that derives it from
-    ``request`` automatically arrives in M1, and ``contract`` is where its
-    structured output will live.
+    Where the root scope comes from:
+
+    * ``scope`` given - used as written.
+    * ``scope`` omitted - the intent compiler (``configure(intent=...)``)
+      derives it from ``request``. Its contract, and anything it had to
+      correct, is saved with the session as ``contract``.
+
+    ``ceiling`` is what the principal is actually permitted to do (from your
+    identity system). When given, the root scope is clamped inside it, so
+    neither a hand-written scope nor a compiled one can exceed the person's
+    real permissions.
     """
     store, authority = _rt.ensure()
+
+    if scope is None:
+        if _rt.intent is None:
+            raise ValueError(
+                "session() needs a scope, or an intent compiler to derive one from the request: "
+                "warrant.configure(intent=IntentCompiler(catalog))"
+            )
+        compiled = _rt.intent.compile(request)
+        scope = compiled.contract.to_scope()
+        if contract is None:
+            contract = compiled.to_record()
+    if ceiling is not None:
+        scope = scope.clamped_to(ceiling)
+
     sid = session_id or f"ses_{uuid.uuid4().hex[:16]}"
     started = utcnow()
 

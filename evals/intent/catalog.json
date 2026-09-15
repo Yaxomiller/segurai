@@ -1,0 +1,43 @@
+{
+  "operations": {
+    "read": "look up records without changing them",
+    "list": "list or enumerate records",
+    "search": "search across records",
+    "export": "copy data out of the system, e.g. a CSV download",
+    "create": "add new records",
+    "update": "change existing records",
+    "archive": "hide records from normal use without deleting them; can be undone",
+    "delete": "permanently remove records; cannot be undone",
+    "send": "send a message to people (email or chat)",
+    "invite": "invite people to an event, channel or account",
+    "share": "give someone access to a file or record",
+    "refund": "return money to a customer",
+    "deploy": "deploy or roll back software"
+  },
+  "resources": {
+    "crm.accounts": "customer companies",
+    "crm.contacts": "people at customer companies",
+    "crm.opportunities": "sales deals",
+    "crm.leads": "prospective customers not yet qualified",
+    "crm.notes": "notes attached to CRM records",
+    "billing.invoices": "invoices sent to customers",
+    "billing.subscriptions": "customer subscription plans",
+    "billing.payments": "payments received from customers",
+    "billing.refunds": "refunds issued to customers",
+    "support.tickets": "customer support tickets",
+    "support.macros": "saved reply templates for support agents",
+    "hr.employees": "employee records",
+    "hr.payroll": "salary and payroll records",
+    "hr.time_off": "time-off requests",
+    "email.messages": "sent and received email",
+    "email.drafts": "unsent draft emails",
+    "calendar.events": "calendar meetings and events",
+    "chat.messages": "team chat messages and channels",
+    "files.documents": "documents in the company drive",
+    "files.shared_links": "share links to documents",
+    "analytics.reports": "saved analytics reports",
+    "analytics.dashboards": "analytics dashboards",
+    "infra.deployments": "software deployments",
+    "infra.feature_flags": "feature flags controlling product behaviour"
+  }
+}
