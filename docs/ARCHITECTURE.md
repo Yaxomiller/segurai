@@ -36,7 +36,8 @@ It is checked in [`Scope.is_subset_of`](../src/warrant/models.py) along every di
 - **targets** — every child pattern must fit inside a parent pattern (see *Patterns* below)
 - **max_scale** — no higher, and never unbounded under a bounded parent
 - **irreversible_allowed** — cannot switch on
-- **constraints** — cannot drop a condition the parent carried
+- **constraints** and **checks** — cannot drop a condition the parent carried
+- **max_total** — no higher, and never unbounded under a bounded parent
 
 An agent that asks for more than it was given gets a `ChainError`, not a silent trim. A caller trying to widen has a bug worth seeing.
 
@@ -92,6 +93,27 @@ When work crosses a **process** boundary, the warrant must travel explicitly:
 | Services with OpenTelemetry | optionally in OpenTelemetry baggage (see [`instrument/otel.py`](../src/warrant/instrument/otel.py)) |
 
 The receiving side always **verifies the signature** before building on a warrant.
+
+---
+
+## Tier 1: the deterministic check
+
+Every action is checked against the scope of the warrant it runs under, in microseconds and with no model call ([`Scope.evaluate`](../src/warrant/models.py)). It reports **every** rule the action broke, not just the first, as a list of *findings*:
+
+| Rule | Fires when | Example |
+|---|---|---|
+| `operation` | the operation isn't in the scope | a cleanup agent sends email |
+| `target` | the resource is outside the scope's targets | an agent handed opportunities touches accounts |
+| `scale` | one change affects more records than `max_scale` | one call deletes 400, limit 50 |
+| `total` | the session's running total passes `max_total` | 60 one-record archives, limit 50 |
+| `irreversible` | an irreversible action the scope doesn't allow | delete instead of archive |
+| `condition` | a **Check** isn't met by the evidence | the batch includes a deal active 12 days ago |
+
+**Checks make conditions testable.** "Only records with no recent activity" becomes `Check(field="days_since_activity", op=">=", value=180)`. The agent reports evidence with the action (`warrant.act("archive", ..., days_since_activity=[200, 12, 400])`, or through an `ActionSpec`'s `evidence`), and every item must satisfy the condition. Checks govern changes, not reads, unless told otherwise.
+
+**Missing evidence is "unverifiable", not a violation.** If an action doesn't report what a check needs, the finding says so (`?` in the tree). It blocks nothing and isn't counted as a violation: calling it one would bury real alerts in noise, and calling it a pass would be untrue. It's the question Tier 2 is for.
+
+**Measured:** [`evals/tier1/`](../evals/tier1/README.md) holds 20 seeded scenarios, 10 violations and 10 legitimate tasks. `warrant eval-tier1` runs them: all 10 violations caught for the right reason, no false positives, and a checked action takes about 0.15 ms at the 99th percentile (the check itself about 0.01 ms).
 
 ---
 
@@ -201,6 +223,7 @@ src/warrant/
   context.py           the current warrant; export/import across processes
   actions.py           ActionSpec: tool call → operation/resource/scale
   runtime.py           session, agent, delegate, act, tool, configure, listeners
+  scenarios.py         the Tier 1 scenario suite (M2)
   cli.py               the `warrant` command
   collector/
     store.py           SQLite storage and migrations
@@ -217,6 +240,7 @@ src/warrant/
     mcp.py             MCP client and server
 examples/              runnable demos (no API keys needed)
 evals/intent/          the intent compiler's catalog and 50 labeled cases
+evals/tier1/           20 seeded scenarios for the Tier 1 check
 tests/                 one file per area; see below
 ```
 
@@ -225,6 +249,7 @@ tests/                 one file per area; see below
 | Test file | Proves |
 |---|---|
 | `test_scope.py`, `test_inheritance.py` | the admission check and the narrowing rules |
+| `test_checks.py`, `test_tier1_scenarios.py` | conditions, the session total and findings; the 20-scenario suite meets the M2 target on every run |
 | `test_patterns.py` | a child pattern can never reach past its parent (brute-force checked) |
 | `test_authority.py`, `test_keys.py` | tampering, re-parenting, reordering and foreign keys are all detected; keys survive restarts |
 | `test_runtime.py`, `test_tools_async.py` | the developer API, async agents, tools, listeners, delegation across boundaries |
@@ -241,7 +266,8 @@ tests/                 one file per area; see below
 - **The signing key sits with the agent process.** Fine for development; in production an agent that holds the key could mint itself anything. Moving signing into a separate collector is a later milestone.
 - **The database is not tamper-evident.** Warrants are signed, so editing one is caught; but a deleted *action* row leaves no trace. A hash-chained, append-only log is planned (M7).
 - **The intent compiler has not been measured live yet.** It is built and tested offline; the 50-case eval needs an Anthropic API key, and its labels were drafted by Claude, so a person should review them before any score is quoted.
-- **Constraints are carried, not checked.** "Must not affect active customers" travels down the chain but nothing evaluates it yet (M2 heuristics, M4 semantic judge).
+- **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
+- **Plain-English constraints still need a Check to be tested.** The intent compiler doesn't write Checks yet, and a condition that can't be expressed as one waits for the semantic judge (M4).
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
 - **Generator functions cannot be agents or tools yet** — the warrant would leak between yields. Clear error if tried.
 - **MCP trust is single-organisation.** A server must hold the same key as the client.

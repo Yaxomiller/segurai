@@ -1,13 +1,17 @@
-"""Core data model - the three objects everything else is built from.
+"""Core data model - the objects everything else is built from.
 
   Scope        - WHAT an actor may do: which operations, on which targets, how
-                 many records one action may change, whether irreversible
-                 actions are allowed, and plain-English conditions.
+                 many records one action (and the whole session) may change,
+                 whether irreversible actions are allowed, and conditions.
+  Check        - one condition a program can test, such as
+                 "days_since_activity >= 180", against evidence an action reports.
   Warrant      - a SIGNED grant of a Scope to one holder (an agent), linked to
                  the warrant it was derived from. Following those links from
                  any agent back to the top reaches the human who started it.
   ActionRecord - something an agent ACTUALLY did, recorded under a Warrant,
-                 together with the verdict of the admission check.
+                 together with every Finding of the admission check.
+  Finding      - one thing the check found: a broken rule, or a rule that
+                 could not be tested for lack of evidence.
 
 The central rule is *attenuation*: a Warrant derived from another may only ever
 narrow the Scope, never widen it. That rule is what makes the chain mean
@@ -15,21 +19,23 @@ something - if it held at every hop, then whatever happened at the leaf was
 within what the root principal granted.
 
 Where this file is used:
-    runtime.py    calls Scope.permits() on every action       (Tier 1 check)
-    authority.py  calls Scope.is_subset_of() at every hop      (attenuation)
+    runtime.py    calls Scope.evaluate() on every action       (Tier 1 check)
+    authority.py  calls Scope.is_subset_of() at every hop       (attenuation)
     collector/    stores these objects and rebuilds the tree from them
 """
 
 from __future__ import annotations
 
 import json
+import operator as _operator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
-__all__ = ["Scope", "Warrant", "ActionRecord", "utcnow", "NON_MUTATING", "pattern_covers"]
+__all__ = ["Scope", "Check", "Finding", "Warrant", "ActionRecord", "utcnow",
+           "NON_MUTATING", "CHECK_OPS", "pattern_covers"]
 
 #: Operations that read without changing anything. ``max_scale`` does not apply
 #: to these: an agent scanning 412 rows to find deletion candidates is doing its
@@ -195,6 +201,188 @@ def _require_list(name: str, value: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Findings and checks - the parts of the Tier 1 check
+# ---------------------------------------------------------------------------
+
+#: Comparison operators a Check may use.
+CHECK_OPS = ("==", "!=", "<", "<=", ">", ">=", "in", "not_in")
+
+_COMPARE = {
+    "==": _operator.eq, "!=": _operator.ne,
+    "<": _operator.lt, "<=": _operator.le, ">": _operator.gt, ">=": _operator.ge,
+}
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing the Tier 1 check found about one action.
+
+    ``check`` names the rule it came from:
+        operation     the operation is not in the scope
+        target        the resource is outside the scope's targets
+        scale         one action changes more records than ``max_scale`` allows
+        total         the session's running total of changed records passes ``max_total``
+        irreversible  an irreversible action the scope does not allow
+        condition     a Check (e.g. "no recent activity") is not met
+        spec          a tool call could not be described by its ActionSpec
+
+    ``status`` is "fail" - the rule was broken - or "unverifiable": the rule
+    could not be tested because the action did not report the evidence it
+    needs. Unverifiable is NOT a violation. It is a question for a person, or
+    for the semantic judge (Tier 2): calling it a violation would bury real
+    alerts in noise, and calling it a pass would be a lie.
+
+    ``clause`` quotes the part of the scope the finding is about, so a report
+    can say exactly which promise was broken.
+    """
+
+    check: str
+    status: str
+    reason: str
+    clause: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"check": self.check, "status": self.status, "reason": self.reason, "clause": self.clause}
+
+    @staticmethod
+    def from_dict(d: Mapping[str, Any]) -> "Finding":
+        return Finding(str(d["check"]), str(d["status"]), str(d["reason"]), str(d.get("clause", "")))
+
+
+def _fail(check: str, reason: str, clause: str) -> Finding:
+    return Finding(check, "fail", reason, clause)
+
+
+def _compare(item: Any, op: str, value: Any) -> bool:
+    """Apply one operator. Raises TypeError when the two sides cannot be compared."""
+    if op == "in":
+        return item in value
+    if op == "not_in":
+        return item not in value
+    if op in ("<", "<=", ">", ">=") and isinstance(item, bool) != isinstance(value, bool):
+        # Python happily compares True with 180; for evidence that is a mistake.
+        raise TypeError("cannot order a true/false value against a number")
+    return _COMPARE[op](item, value)
+
+
+@dataclass(frozen=True)
+class Check:
+    """A condition Tier 1 can test against the evidence an action reports.
+
+    The plain-English condition "only records with no recent activity" cannot
+    be checked by a program. This version of it can:
+
+        Check(field="days_since_activity", op=">=", value=180,
+              condition="only records with no recent activity",
+              targets=("crm.opportunities",))
+
+    The agent reports evidence with the action -
+
+        warrant.act("archive", "crm.opportunities", scale=3,
+                    days_since_activity=[200, 12, 400])
+
+    - and the check compares it. The rules:
+
+      * A list of evidence must satisfy the condition for EVERY item: one
+        recently active record in a batch of three breaks the rule.
+      * Missing evidence, or evidence that cannot be compared (a word where a
+        number belongs), makes the result "unverifiable" - never a pass, and
+        never a violation.
+      * ``on="mutations"`` (the default) applies the check only to actions
+        that change something; reads may look at any record. ``on="all"``
+        applies it to reads too.
+      * ``targets`` limits the check to some resources (glob patterns);
+        empty means every resource.
+    """
+
+    field: str
+    op: str
+    value: Any
+    condition: str = ""
+    targets: tuple[str, ...] = ()
+    on: str = "mutations"
+
+    def __post_init__(self) -> None:
+        if not self.field:
+            raise ValueError("a check needs a field name")
+        if self.op not in CHECK_OPS:
+            raise ValueError(f"op must be one of {CHECK_OPS}, got {self.op!r}")
+        if self.on not in ("mutations", "all"):
+            raise ValueError(f"on must be 'mutations' or 'all', got {self.on!r}")
+        # A frozen dataclass must be hashable, and lists are not, so list
+        # values are stored as tuples.
+        if isinstance(self.value, list):
+            object.__setattr__(self, "value", tuple(self.value))
+        if isinstance(self.targets, (list, str)):
+            object.__setattr__(self, "targets",
+                               (self.targets,) if isinstance(self.targets, str) else tuple(self.targets))
+        if self.op in ("in", "not_in") and not isinstance(self.value, tuple):
+            raise ValueError(f"op {self.op!r} needs a list of values")
+
+    @property
+    def label(self) -> str:
+        """How the check is named in findings: its condition, or the formula itself."""
+        return self.condition or f"{self.field} {self.op} {self.value!r}"
+
+    def applies(self, operation: str, resource: str) -> bool:
+        """Does this check govern this action at all?"""
+        if self.on == "mutations" and operation in NON_MUTATING:
+            return False
+        return not self.targets or _target_within(resource, self.targets)
+
+    def evaluate(self, evidence: Mapping[str, Any] | None) -> Finding | None:
+        """None when the condition holds; otherwise a "fail" or "unverifiable" Finding."""
+        label = self.label
+        if not evidence or self.field not in evidence:
+            return Finding("condition", "unverifiable",
+                           f"cannot verify {label!r}: the action reported no {self.field!r}", label)
+        reported = evidence[self.field]
+        items = list(reported) if isinstance(reported, (list, tuple, set, frozenset)) else [reported]
+        if not items:
+            return Finding("condition", "unverifiable",
+                           f"cannot verify {label!r}: {self.field!r} was empty", label)
+
+        broken = []
+        for item in items:
+            try:
+                if not _compare(item, self.op, self.value):
+                    broken.append(item)
+            except TypeError:
+                return Finding("condition", "unverifiable",
+                               f"cannot verify {label!r}: {self.field} = {item!r} cannot be "
+                               f"compared with {self.value!r}", label)
+        if broken:
+            shown = broken[0] if len(broken) == 1 else broken
+            return _fail("condition",
+                         f"condition not met: {label} ({self.field} = {shown!r}, "
+                         f"required {self.op} {self.value!r})", label)
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "field": self.field,
+            "op": self.op,
+            "value": list(self.value) if isinstance(self.value, tuple) else self.value,
+            "condition": self.condition,
+        }
+        if self.targets:
+            d["targets"] = list(self.targets)
+        if self.on != "mutations":
+            d["on"] = self.on
+        return d
+
+    @staticmethod
+    def from_dict(d: Mapping[str, Any]) -> "Check":
+        return Check(field=d["field"], op=d["op"], value=d["value"],
+                     condition=d.get("condition", ""), targets=tuple(d.get("targets") or ()),
+                     on=d.get("on", "mutations"))
+
+
+def _as_check(value: Check | Mapping[str, Any]) -> Check:
+    return value if isinstance(value, Check) else Check.from_dict(value)
+
+
+# ---------------------------------------------------------------------------
 # Scope
 # ---------------------------------------------------------------------------
 
@@ -204,13 +392,16 @@ class Scope:
     """What an actor may do.
 
     ``targets`` entries are glob patterns matched against resource names, so
-    ``crm.*`` covers ``crm.opportunities``. ``max_scale`` is an upper bound on
-    the number of records a single *mutating* action may affect; ``None``
-    means unbounded.
+    ``crm.*`` covers ``crm.opportunities``.
 
-    ``constraints`` are natural-language conditions that deterministic checks
-    cannot evaluate (for example "only records with no recent activity"). They
-    travel down the chain and are handed to the semantic judge later.
+    ``max_scale`` bounds how many records a single *mutating* action may
+    change. ``max_total`` bounds how many records all mutating actions in the
+    session may change together - without it, 400 one-record deletions would
+    each pass a limit of 50. ``None`` means unbounded for either.
+
+    ``constraints`` are natural-language conditions, carried down the chain
+    for people and for the semantic judge. ``checks`` are conditions in a form
+    a program can test against evidence (see :class:`Check`).
 
     ``unspecified`` remembers which fields the author left out when building
     the scope with :meth:`of`. It is bookkeeping only: it is not signed, not
@@ -222,6 +413,8 @@ class Scope:
     max_scale: int | None = None
     irreversible_allowed: bool = False
     constraints: tuple[str, ...] = ()
+    max_total: int | None = None
+    checks: tuple[Check, ...] = ()
     unspecified: frozenset[str] = field(default=frozenset(), compare=False, repr=False)
 
     @staticmethod
@@ -231,14 +424,16 @@ class Scope:
         max_scale: int | None = None,
         irreversible_allowed: bool | None = None,
         constraints: list[str] | None = None,
+        max_total: int | None = None,
+        checks: list[Check | Mapping[str, Any]] | None = None,
     ) -> "Scope":
         """Ergonomic constructor that takes plain lists.
 
         Leaving an argument out (``None``) marks that field *unspecified*.
 
         * Used as a session's root scope, unspecified just means the empty
-          default: no operations, no targets, unbounded scale, no
-          irreversible actions.
+          default: no operations, no targets, unbounded scale and total, no
+          irreversible actions, no conditions.
         * Handed to an agent as a narrowing, unspecified fields are copied
           from the parent - so an agent can say only what it narrows.
 
@@ -248,8 +443,10 @@ class Scope:
         _require_list("operations", operations)
         _require_list("targets", targets)
         _require_list("constraints", constraints)
-        if max_scale is not None and max_scale < 0:
-            raise ValueError(f"max_scale must be zero or more, got {max_scale}")
+        _require_list("checks", checks)
+        for name, bound in (("max_scale", max_scale), ("max_total", max_total)):
+            if bound is not None and bound < 0:
+                raise ValueError(f"{name} must be zero or more, got {bound}")
 
         given = {
             "operations": operations,
@@ -263,6 +460,8 @@ class Scope:
             max_scale=max_scale,
             irreversible_allowed=bool(irreversible_allowed),
             constraints=tuple(constraints or []),
+            max_total=max_total,
+            checks=tuple(_as_check(c) for c in (checks or [])),
             unspecified=frozenset(name for name, value in given.items() if value is None),
         )
 
@@ -275,24 +474,57 @@ class Scope:
         """
         return _target_within(resource, self.targets)
 
-    def permits(self, operation: str, resource: str, scale: int = 1,
-                irreversible: bool = False) -> tuple[bool, str | None]:
-        """Deterministic admission check. Returns (ok, reason_if_not).
+    def evaluate(self, operation: str, resource: str, scale: int = 1, irreversible: bool = False,
+                 evidence: Mapping[str, Any] | None = None, changed_so_far: int = 0) -> list[Finding]:
+        """Run every Tier 1 rule against one action. An empty list means clean.
 
-        This is the Tier 1 check from the design: pure comparison, no model
-        call, microseconds. The checks run cheapest-first and stop at the first
-        failure. Constraints are deliberately *not* evaluated here - they are
-        not decidable without understanding the words.
+        This is the deterministic check from the design: pure comparison, no
+        model call, microseconds. Unlike :meth:`permits`, it does not stop at
+        the first problem - an auditor wants every rule an action broke.
+
+        ``evidence`` is what the action reported about the records it touched
+        (used by ``checks``). ``changed_so_far`` is how many records earlier
+        actions in the session already changed (used by ``max_total``).
         """
+        findings: list[Finding] = []
         if operation not in self.operations:
-            return False, f"operation {operation!r} not in scope {sorted(self.operations)}"
+            findings.append(_fail("operation",
+                                  f"operation {operation!r} not in scope {sorted(self.operations)}",
+                                  f"operations={sorted(self.operations)}"))
         if not self.covers_target(resource):
-            return False, f"target {resource!r} not covered by {sorted(self.targets)}"
+            findings.append(_fail("target",
+                                  f"target {resource!r} not covered by {sorted(self.targets)}",
+                                  f"targets={sorted(self.targets)}"))
         mutating = operation not in NON_MUTATING
         if mutating and self.max_scale is not None and scale > self.max_scale:
-            return False, f"scale {scale} exceeds limit {self.max_scale}"
+            findings.append(_fail("scale", f"scale {scale} exceeds limit {self.max_scale}",
+                                  f"max_scale={self.max_scale}"))
+        if mutating and self.max_total is not None and changed_so_far + scale > self.max_total:
+            findings.append(_fail("total",
+                                  f"total changed this session would reach {changed_so_far + scale}, "
+                                  f"over the limit of {self.max_total}",
+                                  f"max_total={self.max_total}"))
         if irreversible and not self.irreversible_allowed:
-            return False, "irreversible action not permitted by scope"
+            findings.append(_fail("irreversible", "irreversible action not permitted by scope",
+                                  "irreversible_allowed=false"))
+        for check in self.checks:
+            if check.applies(operation, resource):
+                finding = check.evaluate(evidence)
+                if finding is not None:
+                    findings.append(finding)
+        return findings
+
+    def permits(self, operation: str, resource: str, scale: int = 1,
+                irreversible: bool = False) -> tuple[bool, str | None]:
+        """Quick yes/no: (ok, first reason if not).
+
+        Built on :meth:`evaluate`. Conditions are not tested here because no
+        evidence is passed - they come back "unverifiable", which is not a
+        failure.
+        """
+        for finding in self.evaluate(operation, resource, scale, irreversible):
+            if finding.status == "fail":
+                return False, finding.reason
         return True, None
 
     def is_subset_of(self, other: "Scope") -> tuple[bool, str | None]:
@@ -315,6 +547,12 @@ class Scope:
             if self.max_scale > other.max_scale:
                 return False, f"widens max_scale: {self.max_scale} > {other.max_scale}"
 
+        if other.max_total is not None:
+            if self.max_total is None:
+                return False, "widens max_total: unbounded under a bounded parent"
+            if self.max_total > other.max_total:
+                return False, f"widens max_total: {self.max_total} > {other.max_total}"
+
         if self.irreversible_allowed and not other.irreversible_allowed:
             return False, "widens irreversible_allowed"
 
@@ -323,6 +561,9 @@ class Scope:
         dropped = set(other.constraints) - set(self.constraints)
         if dropped:
             return False, f"drops inherited constraints: {sorted(dropped)}"
+        missing = [c.label for c in other.checks if c not in self.checks]
+        if missing:
+            return False, f"drops inherited checks: {missing}"
 
         return True, None
 
@@ -333,6 +574,8 @@ class Scope:
         max_scale: int | None = None,
         irreversible_allowed: bool | None = None,
         add_constraints: list[str] | None = None,
+        max_total: int | None = None,
+        add_checks: list[Check] | None = None,
     ) -> "Scope":
         """Build a scope that is guaranteed no wider than this one.
 
@@ -356,21 +599,27 @@ class Scope:
                     # the request entirely.
                     kept.update(p for p in self.targets if pattern_covers(t, p))
             new_targets = frozenset(kept)
-        new_scale = self.max_scale
-        if max_scale is not None:
-            new_scale = max_scale if self.max_scale is None else min(max_scale, self.max_scale)
+
+        def lower(requested: int | None, current: int | None) -> int | None:
+            if requested is None:
+                return current
+            return requested if current is None else min(requested, current)
+
         new_irrev = self.irreversible_allowed
         if irreversible_allowed is not None:
             new_irrev = irreversible_allowed and self.irreversible_allowed
         new_constraints = self.constraints + tuple(
             c for c in (add_constraints or ()) if c not in self.constraints
         )
+        new_checks = self.checks + tuple(c for c in (add_checks or ()) if c not in self.checks)
         return Scope(
             operations=new_ops,
             targets=new_targets,
-            max_scale=new_scale,
+            max_scale=lower(max_scale, self.max_scale),
             irreversible_allowed=new_irrev,
             constraints=new_constraints,
+            max_total=lower(max_total, self.max_total),
+            checks=new_checks,
         )
 
     def clamped_to(self, ceiling: "Scope") -> "Scope":
@@ -379,7 +628,7 @@ class Scope:
         Used when a scope comes from somewhere untrusted - such as a language
         model reading a request - and must not exceed what the person is
         really permitted to do. Anything outside the ceiling is removed;
-        nothing is ever added.
+        nothing is ever added except the ceiling's own conditions.
         """
         return ceiling.narrow(
             operations=sorted(self.operations),
@@ -387,6 +636,8 @@ class Scope:
             max_scale=self.max_scale,
             irreversible_allowed=self.irreversible_allowed,
             add_constraints=list(self.constraints),
+            max_total=self.max_total,
+            add_checks=list(self.checks),
         )
 
     def inherit_unspecified(self, parent: "Scope") -> "Scope":
@@ -409,31 +660,45 @@ class Scope:
         def pick(name: str) -> Any:
             return getattr(parent, name) if name in self.unspecified else getattr(self, name)
 
-        # max_scale=None inherits even on a Scope built directly (not via of()):
-        # "unbounded" under a bounded parent would be a widening anyway.
+        # A missing bound inherits even on a Scope built directly (not via
+        # of()): "unbounded" under a bounded parent would be a widening anyway.
         max_scale = self.max_scale if self.max_scale is not None else parent.max_scale
+        max_total = self.max_total if self.max_total is not None else parent.max_total
 
-        # Constraints always accumulate: the parent's first, then the child's new ones.
+        # Conditions always accumulate: the parent's first, then the child's new ones.
         constraints = parent.constraints + tuple(
             c for c in self.constraints if c not in parent.constraints
         )
+        checks = parent.checks + tuple(c for c in self.checks if c not in parent.checks)
         return Scope(
             operations=pick("operations"),
             targets=pick("targets"),
             max_scale=max_scale,
             irreversible_allowed=pick("irreversible_allowed"),
             constraints=constraints,
+            max_total=max_total,
+            checks=checks,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain-JSON form. This exact shape is what gets signed and stored."""
-        return {
+        """Plain-JSON form. This exact shape is what gets signed and stored.
+
+        ``max_total`` and ``checks`` appear only when set, so a scope without
+        them serializes exactly as it did before they existed - and warrants
+        signed back then still verify.
+        """
+        d: dict[str, Any] = {
             "operations": sorted(self.operations),
             "targets": sorted(self.targets),
             "max_scale": self.max_scale,
             "irreversible_allowed": self.irreversible_allowed,
             "constraints": list(self.constraints),
         }
+        if self.max_total is not None:
+            d["max_total"] = self.max_total
+        if self.checks:
+            d["checks"] = [c.to_dict() for c in self.checks]
+        return d
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "Scope":
@@ -444,6 +709,8 @@ class Scope:
             max_scale=d.get("max_scale"),
             irreversible_allowed=bool(d.get("irreversible_allowed", False)),
             constraints=tuple(d.get("constraints") or []),
+            max_total=d.get("max_total"),
+            checks=tuple(Check.from_dict(c) for c in d.get("checks") or []),
         )
 
 
@@ -508,16 +775,17 @@ class Warrant:
 class ActionRecord:
     """Something an agent actually did, recorded under a Warrant.
 
-    ``allowed`` and ``violation`` hold the Tier 1 verdict at the moment the
-    action was recorded.
+    ``findings`` is everything the Tier 1 check found. ``allowed`` is True
+    when none of them is a "fail", and ``violation`` joins the reasons of the
+    ones that are.
 
     ``blocked`` says what happened next, which an auditor needs to know:
     True means ENFORCE mode stopped the action, so it never took place;
     a violation with ``blocked=False`` was recorded in OBSERVE mode and the
     action went ahead.
 
-    ``detail`` is free-form context from the caller (row counts, filters
-    used, a note, the tool name) that later tiers can reason over.
+    ``detail`` is free-form context from the caller (evidence about the
+    records touched, the tool name, a note) that later tiers can reason over.
     """
 
     action_id: str
@@ -532,4 +800,5 @@ class ActionRecord:
     allowed: bool = True
     violation: str | None = None
     blocked: bool = False
+    findings: tuple[Finding, ...] = ()
     detail: dict[str, Any] = field(default_factory=dict)

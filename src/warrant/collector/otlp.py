@@ -36,7 +36,7 @@ from datetime import datetime
 from typing import Any, Iterator, Mapping
 
 from ..authority import Authority, ChainError
-from ..models import ActionRecord, Scope, Warrant
+from ..models import ActionRecord, Finding, Scope, Warrant
 from .store import Store
 
 __all__ = ["decode_request", "ingest", "IngestReport", "UnsupportedEncoding"]
@@ -149,6 +149,7 @@ def _action(a: Mapping[str, Any]) -> ActionRecord:
         allowed=bool(a["warrant.action.allowed"]),
         violation=a.get("warrant.action.violation") or None,
         blocked=bool(a.get("warrant.action.blocked", False)),
+        findings=tuple(Finding.from_dict(f) for f in json.loads(a.get("warrant.action.findings") or "[]")),
         detail=json.loads(a.get("warrant.action.detail") or "{}"),
     )
 

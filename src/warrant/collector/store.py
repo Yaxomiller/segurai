@@ -23,7 +23,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ActionRecord, Scope, Warrant
+from ..models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant
 
 __all__ = ["Store", "SessionRow"]
 
@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS actions (
     allowed        INTEGER NOT NULL,
     violation      TEXT,
     detail_json    TEXT,
-    blocked        INTEGER NOT NULL DEFAULT 0
+    blocked        INTEGER NOT NULL DEFAULT 0,
+    findings_json  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_session ON actions(session_id);
 CREATE INDEX IF NOT EXISTS idx_actions_warrant ON actions(warrant_id);
@@ -78,13 +79,14 @@ CREATE INDEX IF NOT EXISTS idx_actions_flagged ON actions(allowed);
 _ADDED_COLUMNS = [
     ("warrants", "key_id", "TEXT"),
     ("actions", "blocked", "INTEGER NOT NULL DEFAULT 0"),
+    ("actions", "findings_json", "TEXT"),
 ]
 
 _WARRANT_COLUMNS = ("warrant_id", "session_id", "root_principal", "holder", "scope_json",
                     "issued_at", "expires_at", "parent_id", "depth", "signature", "key_id")
 _ACTION_COLUMNS = ("action_id", "session_id", "warrant_id", "actor", "operation", "resource",
                    "scale", "irreversible", "at", "allowed", "violation", "detail_json",
-                   "blocked")
+                   "blocked", "findings_json")
 
 
 def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
@@ -215,7 +217,8 @@ class Store:
              # default=str: a caller's detail may hold dates or other objects
              # JSON cannot encode; storing their text beats losing the action.
              json.dumps(a.detail or {}, default=str),
-             int(a.blocked)),
+             int(a.blocked),
+             json.dumps([f.to_dict() for f in a.findings])),
         )
 
     def actions_for_session(self, session_id: str) -> list[ActionRecord]:
@@ -233,6 +236,21 @@ class Store:
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    def changed_total(self, session_id: str) -> int:
+        """How many records the session's actions have changed so far.
+
+        Reads don't count - scanning 5,000 rows changes nothing - and neither
+        do blocked attempts, which never happened. The ``max_total`` rule
+        compares each new change against this running total.
+        """
+        placeholders = ", ".join("?" for _ in NON_MUTATING)
+        rows = self._read(
+            "SELECT COALESCE(SUM(scale), 0) AS total FROM actions "
+            f"WHERE session_id = ? AND blocked = 0 AND operation NOT IN ({placeholders})",
+            (session_id, *sorted(NON_MUTATING)),
+        )
+        return int(rows[0]["total"])
 
     def exercised_scope(self, session_id: str) -> dict[str, set[str]]:
         """What was actually used, as opposed to what was granted.
@@ -291,5 +309,6 @@ def _row_to_action(row: sqlite3.Row) -> ActionRecord:
         allowed=bool(row["allowed"]),
         violation=row["violation"],
         blocked=bool(row["blocked"]),
+        findings=tuple(Finding.from_dict(f) for f in json.loads(row["findings_json"] or "[]")),
         detail=json.loads(row["detail_json"]) if row["detail_json"] else {},
     )

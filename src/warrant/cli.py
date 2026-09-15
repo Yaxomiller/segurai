@@ -8,6 +8,7 @@
     warrant collect                  receive spans from agents over OTLP/HTTP
     warrant intent "<request>"       compile a request into a scope contract
     warrant eval-intent              grade the intent compiler on labeled cases
+    warrant eval-tier1               run the Tier 1 scenario suite (no API calls)
 
 ``--db`` selects the store, defaulting to ./warrant.db. The signing key is
 looked for beside it (warrant.db -> warrant.key / warrant.pub) unless
@@ -240,6 +241,18 @@ def cmd_eval_intent(args: argparse.Namespace) -> int:
     return 0 if report.acceptable_rate >= MILESTONE_TARGET else 1
 
 
+def cmd_eval_tier1(args: argparse.Namespace) -> int:
+    """Run the seeded Tier 1 scenarios and report against the M2 target."""
+    from .scenarios import load_scenarios, run_scenarios
+
+    report = run_scenarios(load_scenarios(args.scenarios))
+    print(report.to_markdown())
+    if args.out:
+        Path(args.out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"\nFull results: {args.out}")
+    return 0 if report.meets_target else 1
+
+
 def _never_crash_on_unprintable_text() -> None:
     """Replace characters the terminal cannot show instead of raising.
 
@@ -310,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--review-sheet", default=None, help="write a CSV for human review here")
     add_model_options(s)
     s.set_defaults(func=cmd_eval_intent)
+
+    s = sub.add_parser("eval-tier1", help="run the Tier 1 scenario suite (no API calls)")
+    s.add_argument("--scenarios", default="evals/tier1/scenarios.json")
+    s.add_argument("--out", default=None, help="write full JSON results here")
+    s.set_defaults(func=cmd_eval_tier1)
 
     args = p.parse_args(argv)
     return args.func(args)

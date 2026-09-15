@@ -114,6 +114,8 @@ def action_attributes(r: ActionRecord) -> dict[str, Any]:
     }
     if r.violation:
         attrs["warrant.action.violation"] = r.violation
+    if r.findings:
+        attrs["warrant.action.findings"] = json.dumps([f.to_dict() for f in r.findings], sort_keys=True)
     if r.detail:
         attrs["warrant.action.detail"] = json.dumps(r.detail, sort_keys=True, default=str)
     return attrs
@@ -221,6 +223,9 @@ def _flag_violation(span: Any, record: ActionRecord) -> None:
     """
     if not record.allowed:
         span.add_event("warrant.violation", {"warrant.violation.reason": record.violation or ""})
+    unverifiable = [f.reason for f in record.findings if f.status == "unverifiable"]
+    if unverifiable:
+        span.add_event("warrant.unverifiable", {"warrant.unverifiable.reasons": unverifiable})
 
 
 def warrant_from_baggage(ctx: Any = None) -> Warrant | None:

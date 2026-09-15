@@ -52,7 +52,7 @@ from .actions import ActionSpec, ActionSpecError
 from .authority import DEFAULT_TTL, Authority
 from .collector.store import Store
 from .context import bind_warrant, current_warrant
-from .models import ActionRecord, Scope, Warrant, utcnow
+from .models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
 
 __all__ = [
     "Mode", "configure", "session", "agent", "delegate", "act", "tool", "tool_span",
@@ -359,13 +359,29 @@ def agent(name: str, scope: Scope | None = None, ttl: timedelta | None = None) -
     return decorator
 
 
+def _evaluate(w: Warrant, operation: str, resource: str, scale: int, irreversible: bool,
+              evidence: Mapping[str, Any]) -> list[Finding]:
+    """Run the Tier 1 check for one action under warrant ``w``."""
+    changed = 0
+    if w.scope.max_total is not None and operation not in NON_MUTATING:
+        # Only look up the session's running total when a total limit exists
+        # and this action would add to it - reads skip the database entirely.
+        store, _ = _rt.ensure()
+        changed = store.changed_total(w.session_id)
+    return w.scope.evaluate(operation, resource, scale, irreversible,
+                            evidence=evidence, changed_so_far=changed)
+
+
 def _record(w: Warrant, operation: str, resource: str, scale: int, irreversible: bool,
-            ok: bool, reason: str | None, detail: dict[str, Any]) -> ActionRecord:
-    """Save one action with its verdict, tell listeners, and enforce if configured."""
+            findings: list[Finding], detail: dict[str, Any]) -> ActionRecord:
+    """Save one action with its findings, tell listeners, and enforce if configured."""
     store, _ = _rt.ensure()
+    failures = [f for f in findings if f.status == "fail"]
+    ok = not failures
     # Decide up front whether this action will be stopped, so the stored
     # record says so: "flagged but went ahead" and "stopped" are different
-    # facts in an audit.
+    # facts in an audit. Only real failures stop anything; an unverifiable
+    # condition is a question, not a reason to block.
     blocked = not ok and _rt.mode is Mode.ENFORCE
     record = ActionRecord(
         action_id=f"act_{uuid.uuid4().hex[:16]}",
@@ -378,8 +394,9 @@ def _record(w: Warrant, operation: str, resource: str, scale: int, irreversible:
         irreversible=irreversible,
         at=utcnow(),
         allowed=ok,
-        violation=reason,
+        violation="; ".join(f.reason for f in failures) or None,
         blocked=blocked,
+        findings=tuple(findings),
         detail=detail,
     )
     # Saved BEFORE raising, so a blocked attempt is still on the record.
@@ -402,11 +419,14 @@ def act(
 
     Returns the record. In OBSERVE mode a violation is recorded and returned
     with ``allowed=False``; in ENFORCE mode it raises :class:`ViolationError`.
-    Extra keyword arguments are kept as free-form ``detail``.
+
+    Extra keyword arguments are kept as ``detail`` and double as the
+    action's evidence for the scope's conditions, e.g.
+    ``warrant.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])``.
     """
     w = current_warrant()
-    ok, reason = w.scope.permits(operation, resource, scale=scale, irreversible=irreversible)
-    return _record(w, operation, resource, scale, irreversible, ok, reason, detail)
+    findings = _evaluate(w, operation, resource, scale, irreversible, detail)
+    return _record(w, operation, resource, scale, irreversible, findings, detail)
 
 
 def check_tool_call(tool_name: str, spec: ActionSpec, arguments: Mapping[str, Any],
@@ -418,7 +438,6 @@ def check_tool_call(tool_name: str, spec: ActionSpec, arguments: Mapping[str, An
     wherever it was intercepted.
     """
     w = current_warrant()
-    detail = {"tool": tool_name, **detail}
     try:
         action = spec.resolve(arguments)
     except ActionSpecError as exc:
@@ -426,12 +445,16 @@ def check_tool_call(tool_name: str, spec: ActionSpec, arguments: Mapping[str, An
         # rows. An action nobody can describe is not one anybody authorized,
         # so it is recorded as a violation instead of being waved through.
         op = spec.operation if isinstance(spec.operation, str) and "{" not in spec.operation else "unknown"
-        return _record(w, op, f"tool.{tool_name}", 1, False, False, str(exc), detail)
+        finding = Finding("spec", "fail", str(exc), "every tool call must fit its ActionSpec")
+        return _record(w, op, f"tool.{tool_name}", 1, False, [finding], {"tool": tool_name, **detail})
 
-    ok, reason = w.scope.permits(action.operation, action.resource,
-                                 scale=action.scale, irreversible=action.irreversible)
+    # The evidence the spec extracted is stored with the action, so a later
+    # reader can see exactly what the conditions were checked against.
+    detail = {"tool": tool_name, **action.evidence, **detail}
+    findings = _evaluate(w, action.operation, action.resource, action.scale,
+                         action.irreversible, detail)
     return _record(w, action.operation, action.resource, action.scale,
-                   action.irreversible, ok, reason, detail)
+                   action.irreversible, findings, detail)
 
 
 @contextmanager

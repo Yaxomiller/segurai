@@ -29,6 +29,7 @@ Map of the package:
     context.py       which warrant is "current"; moving one between processes
     actions.py       ActionSpec - describing a tool call as an action
     runtime.py       the API above: session, agent, act, tool, configure
+    scenarios.py     the Tier 1 scenario suite (milestone M2)
     collector/       SQLite storage and rebuilding/rendering the chain
     instrument/      optional integrations: OpenTelemetry, LangGraph, MCP
     cli.py           the `warrant` command
@@ -46,7 +47,7 @@ from .context import (
     export_warrant,
     import_warrant,
 )
-from .models import ActionRecord, Scope, Warrant
+from .models import ActionRecord, Check, Finding, Scope, Warrant
 from .runtime import (
     Listener,
     Mode,
@@ -74,7 +75,7 @@ __all__ = [
     # describing tool calls
     "ActionSpec", "ActionSpecError", "count", "arg",
     # model
-    "Scope", "Warrant", "ActionRecord",
+    "Scope", "Check", "Finding", "Warrant", "ActionRecord",
     # authority
     "Authority", "ChainError", "verify_chain",
     # context

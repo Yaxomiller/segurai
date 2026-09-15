@@ -4,21 +4,24 @@ A tool call arrives as a name plus arguments:
 
     delete_records(table="opportunities", ids=[... 400 ids ...])
 
-The admission check needs four facts about it instead:
+The admission check needs a few facts about it instead:
 
     operation     "delete"
     resource      "crm.opportunities"
     scale         400          (how many records it changes)
     irreversible  True
+    evidence      facts about the records touched, which conditions are
+                  checked against, e.g. {"account_status": ["churned", "active"]}
 
 An ActionSpec is the small recipe that turns the first into the second. Each
 field is either a fixed value or a rule computed from the call's arguments:
 
     ActionSpec(
         operation="delete",
-        resource="crm.{table}",      # filled in from the 'table' argument
-        scale=count("ids"),          # len(arguments["ids"])
+        resource="crm.{table}",                        # filled in from 'table'
+        scale=count("ids"),                            # len(arguments["ids"])
         irreversible=True,
+        evidence={"account_status": arg("statuses")},  # passed through for checks
     )
 
 The same ActionSpec type is used everywhere a tool call is intercepted - the
@@ -28,7 +31,7 @@ team describes each tool once and it is judged the same way everywhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 __all__ = ["ActionSpec", "ResolvedAction", "ActionSpecError", "count", "arg"]
@@ -46,12 +49,13 @@ class ActionSpecError(ValueError):
 
 @dataclass(frozen=True)
 class ResolvedAction:
-    """The four facts about one concrete call, after the spec was applied."""
+    """The facts about one concrete call, after the spec was applied."""
 
     operation: str
     resource: str
     scale: int
     irreversible: bool
+    evidence: Mapping[str, Any] = field(default_factory=dict)
 
 
 def count(name: str) -> ArgRule:
@@ -80,12 +84,16 @@ def arg(name: str, default: Any = _MISSING) -> ArgRule:
 
 @dataclass(frozen=True)
 class ActionSpec:
-    """How to read operation, resource, scale and irreversibility off a tool call.
+    """How to read operation, resource, scale, irreversibility and evidence off a tool call.
 
     Each field accepts:
       * a fixed value                        operation="delete"
       * a template filled from arguments     resource="crm.{table}"
       * a function of the arguments          scale=count("ids")
+
+    ``evidence`` maps evidence names to the same kinds of rule. Evidence is
+    what the scope's conditions (Checks) are tested against; a tool that
+    reports none leaves those conditions unverifiable.
 
     Use ``{{`` and ``}}`` in a template for literal braces.
     """
@@ -94,6 +102,7 @@ class ActionSpec:
     resource: str | ArgRule
     scale: int | ArgRule = 1
     irreversible: bool | ArgRule = False
+    evidence: Mapping[str, Any] = field(default_factory=dict)
 
     def resolve(self, arguments: Mapping[str, Any]) -> ResolvedAction:
         """Apply the spec to one call's arguments.
@@ -108,6 +117,7 @@ class ActionSpec:
             resource = _apply(self.resource, arguments)
             scale = _apply(self.scale, arguments)
             irreversible = _apply(self.irreversible, arguments)
+            evidence = {name: _apply(rule, arguments) for name, rule in self.evidence.items()}
         except Exception as exc:
             raise ActionSpecError(
                 f"could not map tool call to an action: {type(exc).__name__}: {exc}"
@@ -120,7 +130,7 @@ class ActionSpec:
         # bool is a subclass of int in Python, so rule it out explicitly.
         if isinstance(scale, bool) or not isinstance(scale, int) or scale < 0:
             raise ActionSpecError(f"scale must be a whole number of zero or more, got {scale!r}")
-        return ResolvedAction(operation, resource, scale, bool(irreversible))
+        return ResolvedAction(operation, resource, scale, bool(irreversible), evidence)
 
 
 def _apply(rule: Any, arguments: Mapping[str, Any]) -> Any:

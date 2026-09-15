@@ -27,7 +27,13 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - Contracts are checked against the organisation's catalog and clamped to the person's real permissions
 - 50 labeled eval cases and a grading harness; running them needs an Anthropic API key
 
-Next: the Tier 1 check suite (M2).
+**M2 — Tier 1 check suite: complete.**
+
+- Every rule an action breaks is reported: operation, target, per-action scale, session total, irreversibility, and conditions
+- Conditions become testable Checks (e.g. `days_since_activity >= 180`), evaluated against evidence the agent reports; missing evidence is "unverifiable", never a false alarm
+- 20 seeded scenarios: 10/10 violations caught for the right reason, 0/10 false positives, 0.15 ms per checked action (p99)
+
+Next: public release (M3).
 
 ## Install
 
@@ -87,9 +93,10 @@ Delegation chain
               [ok     ] read crm.opportunities scale=412
               [FAIL   ] delete crm.opportunities scale=400
                         -> scale 400 exceeds limit 50
+                        -> irreversible action not permitted by scope
 
 Summary: 3 warrants, 2 actions, 1 violation(s)
-  ! crm_agent: delete crm.opportunities (scale=400) - scale 400 exceeds limit 50 [went ahead]
+  ! crm_agent: delete crm.opportunities (scale=400) - scale 400 exceeds limit 50; irreversible action not permitted by scope [went ahead]
 ```
 
 `[FAIL   ]` means the action was outside the warrant and went ahead (observe mode). With `warrant.configure(mode="enforce")` it is stopped before it happens and shows as `[BLOCKED]`.
@@ -105,6 +112,25 @@ from warrant import ActionSpec, count
 def delete_records(table: str, ids: list[int]) -> int:
     ...
 ```
+
+## Conditions
+
+A plain-English condition can't be checked by a program; a `Check` can. The agent reports evidence about the records it touches, and every item must satisfy the condition:
+
+```python
+from warrant import Check
+
+granted = Scope.of(
+    operations=["read", "archive"], targets=["crm.*"], max_scale=50, max_total=50,
+    checks=[Check(field="days_since_activity", op=">=", value=180,
+                  condition="only records with no recent activity")],
+)
+
+warrant.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])
+# -> condition not met: only records with no recent activity (days_since_activity = 12, required >= 180)
+```
+
+`max_total` caps the records changed across the whole session, so 400 one-record deletions can't slip under a per-action limit of 50. An action that reports no evidence for a check is marked unverifiable (`?` in the tree) rather than treated as a violation. Run the 20-scenario suite with `warrant eval-tier1`.
 
 ## LangGraph
 
@@ -196,6 +222,7 @@ warrant keygen                # create a signing key
 warrant collect               # receive spans from agents (OTLP/HTTP)
 warrant intent "<request>"    # compile a request into a scope contract
 warrant eval-intent ...       # grade the intent compiler on labeled cases
+warrant eval-tier1            # run the Tier 1 scenario suite (no API calls)
 ```
 
 `--db` picks the database (default `warrant.db`); the key is found beside it.
@@ -212,6 +239,8 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 
 **Scale bounds mutations, not reads.** An agent scanning 412 rows to find deletion candidates is doing its job; deleting 400 of them is the concern. Conflating them makes every table scan a violation and teaches people to ignore alerts.
 
+**Unverifiable is not a violation.** When an action doesn't report the evidence a condition needs, the finding says so plainly. Treating it as a violation would bury real alerts in noise; treating it as a pass would be untrue.
+
 **An action nobody can describe is not one anybody authorized.** A tool call whose arguments don't fit its `ActionSpec`, or a tool nobody wrote a spec for, is recorded as a violation rather than waved through.
 
 **Observe by default.** Violations are recorded, nothing is blocked. Nobody lets an unproven library block production traffic — but they will let it watch, and watching produces the evidence that earns the right to enforce later.
@@ -223,7 +252,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | Milestone | |
 |---|---|
 | M1 | Intent compiler — built; first live eval run pending |
-| M2 | Tier 1 check suite, 20 seeded scenarios |
+| M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
 | M4 | Tier 2 semantic judge for flagged actions |
 | M5 | Design-partner pilots |

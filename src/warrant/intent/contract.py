@@ -201,6 +201,10 @@ class ScopeContract:
             operations=list(self.expected_operations),
             targets=list(self.expected_targets),
             max_scale=self.typical_max,
+            # typical_max is the contract's estimate of the size of the whole
+            # job, so it also caps the session's running total. That is what
+            # stops 400 one-record deletions slipping under a limit of 50.
+            max_total=self.typical_max,
             irreversible_allowed=self.irreversible_expected,
             constraints=list(self.implied_constraints),
         )

@@ -131,7 +131,14 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
             # BLOCKED - outside it, stopped in ENFORCE mode: it never happened
             mark = "ok     " if a.allowed else ("BLOCKED" if a.blocked else "FAIL   ")
             lines.append(f"{child_prefix}   [{mark}] {a.operation} {a.resource} scale={a.scale}")
-            if not a.allowed:
+            # "->" marks a broken rule. "?" marks a rule that could not be
+            # checked because the action did not report the evidence it needs.
+            if a.findings:
+                for f in a.findings:
+                    marker = "->" if f.status == "fail" else "? "
+                    lines.append(f"{child_prefix}             {marker} {f.reason}")
+            elif not a.allowed:
+                # Records made before findings existed carry only the reason.
                 lines.append(f"{child_prefix}             -> {a.violation}")
         kids = children.get(w.warrant_id, [])
         for i, k in enumerate(kids):
@@ -142,10 +149,12 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
 
     flagged = [a for a in actions if not a.allowed]
     blocked = sum(1 for a in flagged if a.blocked)
+    unverifiable = sum(1 for a in actions for f in a.findings if f.status == "unverifiable")
     lines.append("")
     lines.append(
         f"Summary: {len(warrants)} warrants, {len(actions)} actions, "
         f"{len(flagged)} violation(s)" + (f", {blocked} blocked" if blocked else "")
+        + (f", {unverifiable} unverifiable condition(s)" if unverifiable else "")
     )
     for a in flagged:
         outcome = "blocked" if a.blocked else "went ahead"
@@ -176,6 +185,7 @@ def chain_summary(store: Store, session_id: str) -> dict:
                 "scale": a.scale,
                 "reason": a.violation,
                 "blocked": a.blocked,
+                "findings": [f.to_dict() for f in a.findings],
             }
             for a in actions
             if not a.allowed
