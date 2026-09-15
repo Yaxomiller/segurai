@@ -53,6 +53,12 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - A proposed tightened scope built only from observed use, with the evidence behind it
 - Grants from warrants or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
 
+**M5 — design-partner pilots: kit ready.**
+
+- A hardened container for the collector and web view, and a Compose file that won't start without a token
+- A pilot runbook: day-0 setup, the weekly review, the day-30 wrap-up, data handling ([docs/PILOT_RUNBOOK.md](docs/PILOT_RUNBOOK.md))
+- The pilots themselves need partners — that part is people, not code
+
 ## Install
 
 ```bash
@@ -262,6 +268,15 @@ warrant ui --db warrant.db        # then open http://127.0.0.1:8700/
 
 One page per session: the request and its contract beside the delegation chain, every action's findings inline, and the signatures re-checked each time the page loads. It is plain HTML with no scripts; everything from a request is escaped, and pages carry a strict Content-Security-Policy. With `WARRANT_COLLECTOR_TOKEN` set, the browser asks for the token as a password. The collector serves the same pages at `/`.
 
+## Deploying a pilot
+
+```bash
+export WARRANT_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+docker compose -f deploy/compose.yaml up -d --build
+```
+
+The container runs as an unprivileged user on a read-only filesystem, keeps everything in one volume, listens only on localhost (put your TLS proxy in front), and refuses traffic from other machines without a token. Settings come from `WARRANT_DB`, `WARRANT_KEY`, `WARRANT_HOST`, `WARRANT_PORT` and `WARRANT_COLLECTOR_TOKEN`. The [pilot runbook](docs/PILOT_RUNBOOK.md) covers the rest: keys, connecting agents, the weekly review and the final report.
+
 ## CLI
 
 ```bash
@@ -273,6 +288,7 @@ warrant report --days 30      # scope-creep report across sessions
 warrant keygen                # create a signing key
 warrant collect               # receive spans from agents (OTLP/HTTP)
 warrant ui                    # browse sessions in a web page
+warrant backup --out copy.db  # consistent copy of the database, safe while running
 warrant intent "<request>"    # compile a request into a scope contract
 warrant eval-intent ...       # grade the intent compiler on labeled cases
 warrant eval-tier1            # run the Tier 1 scenario suite (no API calls)
@@ -310,7 +326,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
 | M4 | Tier 2 semantic judge — built; first live eval pending |
-| M5 | Design-partner pilots |
+| M5 | Design-partner pilots — deployment kit and runbook ready |
 | M6 | Scope-creep report — built |
 
 Known limits are listed honestly at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#honest-limits-what-is-not-done-yet).

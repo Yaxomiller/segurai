@@ -35,6 +35,14 @@ The first public release: milestones M0 to M2, plus the intent compiler (M1).
 - `max_total` caps the records changed across a whole session.
 - 20 seeded scenarios: 10 of 10 violations caught for the right reason, 0 of 10 false positives, 0.15 ms per checked action at p99. Run them with `warrant eval-tier1`.
 
+### Pilot kit (M5)
+
+- Dockerfile for the collector and web view: an unprivileged user, a health check, and everything stored in one volume.
+- `deploy/compose.yaml`: refuses to start without a token, binds to localhost only, read-only filesystem, no privilege escalation.
+- The CLI reads `WARRANT_DB`, `WARRANT_KEY`, `WARRANT_HOST` and `WARRANT_PORT`. `collect` and `ui` refuse to listen beyond the local machine without a token unless `--insecure-no-token` is passed.
+- `warrant backup` takes a consistent copy of the database using SQLite's online backup.
+- `docs/PILOT_RUNBOOK.md`: day-0 setup, the weekly review template, the day-30 wrap-up, data handling and troubleshooting.
+
 ### Scope-creep report (M6)
 
 - `warrant report` compares granted with used permissions over a window, per agent and per person's sessions: operations never used, targets never touched, wildcards used for only a few resources, size limits against the largest real change, and irreversible actions never needed.

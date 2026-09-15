@@ -8,6 +8,7 @@
     warrant keygen                   create a signing key
     warrant collect                  receive spans from agents over OTLP/HTTP
     warrant ui                       browse sessions in a web page
+    warrant backup --out copy.db     copy the database safely while it is in use
     warrant intent "<request>"       compile a request into a scope contract
     warrant eval-intent              grade the intent compiler on labeled cases
     warrant eval-tier1               run the Tier 1 scenario suite (no API calls)
@@ -181,54 +182,36 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_collect(args: argparse.Namespace) -> int:
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _serve(args: argparse.Namespace, what: str) -> int:
+    """Start the collector's HTTP server (spans in, web pages out), with the safety checks."""
     from .collector.server import CollectorServer
 
-    store = _store(args)
-    key_path = _find_key(args)
-    verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
     # Prefer the environment variable: a token on the command line is visible
     # to anyone who can list the machine's processes.
     token = args.token or os.environ.get("WARRANT_COLLECTOR_TOKEN")
-
-    server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
-    host, port = server.server_address[:2]
-    print(f"warrant collector: http://{host}:{port}/v1/traces -> {args.db}")
-    if verifier is not None:
-        print(f"  signatures checked with {verifier.key_id}; forged warrants are refused")
-    else:
-        print("  WARNING: no key found - warrants are stored WITHOUT signature checks (pass --key)")
-    if token:
-        print("  bearer token required")
-    elif args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("  WARNING: listening beyond this machine with no token (set WARRANT_COLLECTOR_TOKEN)")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopping")
-    finally:
-        server.server_close()
-    return 0
-
-
-def cmd_ui(args: argparse.Namespace) -> int:
-    """Serve the read-only web view of a database. It accepts spans too, like collect."""
-    from .collector.server import CollectorServer
+    if args.host not in _LOOPBACK and not token and not args.insecure_no_token:
+        print("Refusing to listen beyond this machine without a token: anyone who could reach the "
+              "port could read every session and send forged data. Set WARRANT_COLLECTOR_TOKEN, or "
+              "pass --insecure-no-token if the network is protected some other way.")
+        return 2
 
     store = _store(args)
     key_path = _find_key(args)
     verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
-    token = args.token or os.environ.get("WARRANT_COLLECTOR_TOKEN")
-
     server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
     host, port = server.server_address[:2]
-    print(f"warrant ui: open http://{host}:{port}/   (database: {args.db})")
-    if verifier is None:
-        print("  signatures will show as not checked: no key beside the database (pass --key)")
+    print(f"warrant {what}: http://{host}:{port}/  (spans to /v1/traces, database {args.db})")
+    if verifier is not None:
+        print(f"  signatures checked with {verifier.key_id}; forged warrants are refused")
+    else:
+        print("  WARNING: no key found - signatures are NOT checked (pass --key or set WARRANT_KEY)")
     if token:
-        print("  log in with any user name and the token as the password")
-    elif args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("  WARNING: listening beyond this machine with no token (set WARRANT_COLLECTOR_TOKEN)")
+        print("  token required (web browsers: any user name, the token as the password)")
+    elif args.host not in _LOOPBACK:
+        print("  WARNING: listening beyond this machine with no token (--insecure-no-token)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -236,6 +219,25 @@ def cmd_ui(args: argparse.Namespace) -> int:
         print("stopping")
     finally:
         server.server_close()
+    return 0
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    return _serve(args, "collector")
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    return _serve(args, "ui")
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Copy the database safely, even while the collector is writing to it."""
+    out = Path(args.out)
+    if out.exists() and not args.force:
+        print(f"{out} already exists (use --force to replace it).")
+        return 1
+    _store(args).backup(out)
+    print(f"Backed up {args.db} to {out}")
     return 0
 
 
@@ -383,9 +385,11 @@ def main(argv: list[str] | None = None) -> int:
     _never_crash_on_unprintable_text()
     p = argparse.ArgumentParser(prog="warrant", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--db", default="warrant.db", help="store path (default: warrant.db)")
-    p.add_argument("--key", default=None,
-                   help="signing key file (default: beside the database)")
+    # Defaults can come from the environment, which is how containers are configured.
+    p.add_argument("--db", default=os.environ.get("WARRANT_DB", "warrant.db"),
+                   help="store path (default: $WARRANT_DB, else warrant.db)")
+    p.add_argument("--key", default=os.environ.get("WARRANT_KEY"),
+                   help="signing key file (default: $WARRANT_KEY, else beside the database)")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("sessions", help="list recent sessions")
@@ -420,18 +424,31 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(func=cmd_keygen)
 
     s = sub.add_parser("collect", help="receive spans from agents over OTLP/HTTP")
-    s.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
-    s.add_argument("--port", type=int, default=4318, help="port (default: 4318, the OTLP/HTTP port)")
+    s.add_argument("--host", default=os.environ.get("WARRANT_HOST", "127.0.0.1"),
+                   help="interface to listen on (default: $WARRANT_HOST, else 127.0.0.1)")
+    s.add_argument("--port", type=int, default=int(os.environ.get("WARRANT_PORT", "4318")),
+                   help="port (default: $WARRANT_PORT, else 4318)")
+    s.add_argument("--insecure-no-token", action="store_true",
+                   help="allow listening beyond this machine without a token")
     s.add_argument("--token", default=None,
                    help="require this bearer token (prefer the WARRANT_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_collect)
 
     s = sub.add_parser("ui", help="browse sessions in a web page")
-    s.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
-    s.add_argument("--port", type=int, default=8700, help="port (default: 8700)")
+    s.add_argument("--host", default=os.environ.get("WARRANT_HOST", "127.0.0.1"),
+                   help="interface to listen on (default: $WARRANT_HOST, else 127.0.0.1)")
+    s.add_argument("--port", type=int, default=int(os.environ.get("WARRANT_PORT", "8700")),
+                   help="port (default: $WARRANT_PORT, else 8700)")
+    s.add_argument("--insecure-no-token", action="store_true",
+                   help="allow listening beyond this machine without a token")
     s.add_argument("--token", default=None,
                    help="require this password (prefer the WARRANT_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_ui)
+
+    s = sub.add_parser("backup", help="copy the database safely while it is in use")
+    s.add_argument("--out", required=True, help="where to write the copy")
+    s.add_argument("--force", action="store_true", help="replace an existing file")
+    s.set_defaults(func=cmd_backup)
 
     def add_model_options(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--catalog", required=True, help="catalog JSON of operations and resources")

@@ -291,6 +291,7 @@ examples/              runnable demos (no API keys needed)
 evals/intent/          the intent compiler's catalog and 50 labeled cases
 evals/tier1/           20 seeded scenarios for the Tier 1 check
 evals/tier2/           50 labeled cases for the Tier 2 judge
+Dockerfile, deploy/    the pilot container and Compose file (see docs/PILOT_RUNBOOK.md)
 tests/                 one file per area; see below
 ```
 
@@ -322,6 +323,7 @@ tests/                 one file per area; see below
 - **Neither the intent compiler nor the judge has been measured live.** Both are built and tested offline. Their eval sets need an Anthropic API key to run, and both were labeled by Claude, so people should review the labels before any score is quoted.
 - **The judge's two-second latency target is unmeasured.** It can only be checked against the live API.
 - **The report sees one window.** Permissions needed only by rare jobs look unused in a short window; confidence reflects how much activity was seen, not certainty. Identity-provider grants arrive as an exported file, not through live connectors.
+- **The collector is one process on SQLite.** Right for a pilot. A busy, multi-team deployment needs a production web server and a database built for many concurrent writers.
 - **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
 - **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition can only be weighed by the Tier 2 judge.
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.

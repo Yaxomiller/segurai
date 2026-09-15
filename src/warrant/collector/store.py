@@ -169,6 +169,19 @@ class Store:
     def close(self) -> None:
         self._conn.close()
 
+    def backup(self, path: str | Path) -> None:
+        """Copy the whole database to ``path``, safely, even while it is being written.
+
+        Uses SQLite's online backup, which copies a consistent snapshot.
+        Copying the file directly can catch a write half-way through.
+        """
+        target = sqlite3.connect(str(path))
+        try:
+            with self._lock:
+                self._conn.backup(target)
+        finally:
+            target.close()
+
     def _write(self, sql: str, params: tuple) -> None:
         with self._lock:
             self._conn.execute(sql, params)

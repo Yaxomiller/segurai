@@ -1,0 +1,34 @@
+# Single-tenant pilot: one collector with its web view, one database.
+#
+#   export WARRANT_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+#   mkdir -p keys && cp /path/to/org.pub keys/org.pub
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# It listens on 127.0.0.1 only. Put your usual TLS reverse proxy in front of
+# it (docs/PILOT_RUNBOOK.md has a two-line Caddy example) - never expose the
+# port directly to the internet.
+
+services:
+  warrant:
+    build:
+      context: ..
+    image: warrant-collector:0.1.0
+    restart: unless-stopped
+    environment:
+      # Compose stops with this message if the token isn't set.
+      WARRANT_COLLECTOR_TOKEN: ${WARRANT_COLLECTOR_TOKEN:?set WARRANT_COLLECTOR_TOKEN to a long random value}
+      # The organisation's PUBLIC key. The private key stays with the agents.
+      WARRANT_KEY: /keys/org.pub
+    volumes:
+      - warrant-data:/data
+      - ./keys:/keys:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  warrant-data:
