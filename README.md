@@ -1,5 +1,9 @@
 # Segurai
 
+[![CI](https://github.com/Yaxomiller/segurai/actions/workflows/ci.yml/badge.svg)](https://github.com/Yaxomiller/segurai/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 **Provenance and authority for AI agent chains.** Records what a human asked for, records what the agents actually did, and links the two — so "who authorized this?" has an answer.
 
 > A manager types *"clean up our old sales records."* An assistant passes the job to a CRM agent, which deletes 400 customer records. A month later an auditor asks who authorized it. Every log says: *the service account did it.*
