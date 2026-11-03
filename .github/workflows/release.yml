@@ -45,10 +45,21 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check the tag matches the package version
-        # A tag that disagrees with the package would publish a surprise, so
-        # read the version the same way the build does - by importing it.
+        # A tag that disagrees with the package would publish a surprise.
+        #
+        # _version.py is loaded as a standalone file rather than imported as
+        # segurai._version, because importing the submodule would run the
+        # package's __init__.py and that needs cryptography - which this job
+        # deliberately does not install. (It failed exactly that way on the
+        # first attempt at v0.1.0.)
         run: |
-          version=$(PYTHONPATH=src python -c "from segurai._version import __version__; print(__version__)")
+          version=$(python -c "
+          import importlib.util
+          spec = importlib.util.spec_from_file_location('v', 'src/segurai/_version.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print(module.__version__)
+          ")
           tag="${GITHUB_REF_NAME#v}"
           echo "version in the package: $version"
           echo "tag that was pushed:    $tag"

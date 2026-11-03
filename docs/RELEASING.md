@@ -36,7 +36,9 @@ git push origin v0.1.0
 That starts [the Release workflow](https://github.com/Yaxomiller/segurai/actions/workflows/release.yml), which:
 
 1. runs lint, the full test suite and the Tier 1 scenario suite — a tag that fails is never published;
-2. checks the tag matches the version in `src/segurai/_version.py`, so `v0.2.0` can't publish a package that still says `0.1.0`;
+2. checks the tag matches the version in `src/segurai/_version.py`, so `v0.2.0` can't publish a package that
+   still says `0.1.0`. It reads that file on its own rather than importing `segurai`, because the build job
+   installs no dependencies;
 3. builds the wheel and source distribution and runs `twine check --strict`;
 4. uploads to PyPI.
 
@@ -52,6 +54,19 @@ segurai --help
 1. Bump the version in `src/segurai/_version.py` (that single file is the source of truth; `pyproject.toml` reads it).
 2. Move the `CHANGELOG.md` entries under a new heading with the version and date.
 3. Commit, then tag with a matching `vX.Y.Z` and push the tag.
+
+## If a release fails
+
+Nothing is published unless every step passes, so a failed run is safe — fix the cause, then move the tag and push it again:
+
+```bash
+git tag -d v0.1.0
+git push origin :refs/tags/v0.1.0
+git tag -a v0.1.0 -m "Segurai 0.1.0"
+git push origin v0.1.0
+```
+
+Reusing a version number is only safe while PyPI has never accepted it: PyPI refuses to overwrite a released version. If the upload itself succeeded and something else was wrong, bump to the next version instead.
 
 ## If you'd rather upload by hand
 
