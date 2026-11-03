@@ -265,7 +265,7 @@ Published outside the organisation — a transparency log, or an email to whoeve
 
 Two deliberate choices: writing an **identical** record twice appends nothing (the collector re-ingests traces that arrive in pieces, which is not a new fact), while a record whose contents really changed is logged as an **amendment** with the earlier entry left in place — the log only grows. And raw OpenTelemetry spans are not logged: they are the input, and what is rebuilt from them is.
 
-Cost: 0.04 ms per checked action, of which the append is about 13 µs, against Tier 1's 5 ms budget.
+Cost: 0.04 ms per checked action at the median, 0.4 ms at the 99th percentile under test load, of which the append is about 13 µs. Tier 1's budget is 5 ms.
 
 ---
 

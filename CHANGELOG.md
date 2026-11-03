@@ -11,7 +11,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `segurai checkpoint` signs the current head of the chain with a key the database does not contain, which is what catches a wholesale rewrite. The checkpoint prints as one short line to keep outside the database; published somewhere external, it stops even a key-holder rewriting witnessed history.
 - Writing an identical record twice (the collector re-ingesting a trace that arrived in pieces) appends nothing; a record whose contents really changed is logged as an amendment, and the earlier entry stays — the log only ever grows.
 - Records written before the log existed are reported as such rather than blamed as tampering.
-- Cost: 0.04 ms per checked action, of which the append is ~13 µs. Tier 1's budget is 5 ms.
+- Cost: 0.04 ms per checked action at the median and 0.4 ms at the 99th percentile, of which the append is ~13 µs. Tier 1's budget is 5 ms.
 
 ## [0.1.0] — 2026-11-03
 

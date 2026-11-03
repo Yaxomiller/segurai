@@ -68,7 +68,7 @@ One call per session, not per action. Two rules keep it from being a liability: 
 
 ### 3. Two tiers of checking
 
-**Tier 1 is arithmetic**: is the operation in scope, the target covered, the size within the limit, the session total within its budget, the irreversibility allowed, the conditions met? No model call. About ten microseconds. It runs on every action and reports *every* rule broken, not just the first.
+**Tier 1 is arithmetic**: is the operation in scope, the target covered, the size within the limit, the session total within its budget, the irreversibility allowed, the conditions met? No model call, about 15 µs. It runs on every action and reports *every* rule broken, not just the first.
 
 **Tier 2 is a model**, and it only sees what Tier 1 flagged. Tier 1 is exact but literal: it flags an archive because one deal had "activity" twelve days ago, when that activity was an automated field sync. So the judge gets the request, the contract, the chain, the action, the findings and the recent history, and answers one narrow question: within intent, outside intent, or does a person need to decide?
 
@@ -99,7 +99,7 @@ These are the bugs and judgement calls that took the time. They're also the reas
 ## Numbers
 
 - **317 tests**, green on Linux, macOS and Windows across Python 3.10–3.13.
-- **Tier 1: ~10 µs** per check; **0.04 ms** for a fully recorded and hash-chained action. The budget was 5 ms.
+- **Tier 1: ~15 µs** per check. A fully recorded and hash-chained action is **0.04 ms** median, **0.4 ms** at the 99th percentile under test load. The budget was 5 ms.
 - **20 seeded scenarios** — ten violations, ten legitimate tasks that a noisy checker would flag. Ten of ten caught for the right reason, zero false positives. The scenarios are in the repo; `segurai eval-tier1` runs them in a second and costs nothing.
 
 ## What isn't done

@@ -64,7 +64,7 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 
 - Every record appends to a hash chain in the same transaction, so an edited or deleted row no longer passes unnoticed
 - `segurai audit` names what changed; `segurai checkpoint` signs the chain's head with a key the database doesn't hold, which catches a full rewrite
-- 0.04 ms per checked action, against a 5 ms budget
+- 0.04 ms per checked action (0.4 ms at the 99th percentile), against a 5 ms budget
 
 **M5 — design-partner pilots: kit ready.**
 
