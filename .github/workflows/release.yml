@@ -1,0 +1,85 @@
+# Publish a release to PyPI.
+#
+# Triggered by pushing a version tag:
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# There is no API token anywhere in this repository. PyPI trusts this exact
+# workflow in this exact repository ("trusted publishing", an OpenID Connect
+# handshake), so the upload is authorised by GitHub's short-lived identity
+# token instead of a secret that could leak. The one-time setup is a form on
+# PyPI; docs/RELEASING.md has the field values.
+#
+# The tests still run first: a tag that fails CI is not published.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m ruff check src tests examples --select E,F,W,B,I --ignore E501
+      - run: python -m pytest -q
+      - run: segurai eval-tier1
+
+  build:
+    name: build the distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the package version
+        # A tag that disagrees with the package would publish a surprise, so
+        # read the version the same way the build does - by importing it.
+        run: |
+          version=$(PYTHONPATH=src python -c "from segurai._version import __version__; print(__version__)")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version in the package: $version"
+          echo "tag that was pushed:    $tag"
+          test "$version" = "$tag"
+      - name: Build
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Check the metadata
+        run: |
+          python -m pip install twine
+          python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment is where the "wait for approval" setting lives, if you
+    # ever want a manual gate before a release goes out.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/segurai
+    permissions:
+      id-token: write          # required for trusted publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

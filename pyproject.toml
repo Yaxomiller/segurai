@@ -26,7 +26,7 @@ classifiers = [
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # The core needs only a signing library. Everything else is an optional extra,
-# so trying warrant never drags a framework into someone's environment.
+# so trying Segurai never drags a framework into someone's environment.
 dependencies = [
     "cryptography>=42.0",
 ]
@@ -48,6 +48,14 @@ dev = [
 
 [project.scripts]
 segurai = "segurai.cli:main"
+
+# Shown in the sidebar of the PyPI project page.
+[project.urls]
+Homepage = "https://github.com/Yaxomiller/segurai"
+Repository = "https://github.com/Yaxomiller/segurai"
+Changelog = "https://github.com/Yaxomiller/segurai/blob/master/CHANGELOG.md"
+Documentation = "https://github.com/Yaxomiller/segurai/blob/master/docs/ARCHITECTURE.md"
+Issues = "https://github.com/Yaxomiller/segurai/issues"
 
 [tool.setuptools.dynamic]
 version = { attr = "segurai._version.__version__" }

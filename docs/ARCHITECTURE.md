@@ -173,7 +173,7 @@ The model's output is treated as untrusted. It can only ever *narrow* the person
 
 ## The scope-creep report
 
-[`report.py`](../src/segurai/report.py) turns a window of recorded activity into least-privilege advice. For every identity (each agent by name, and each person's session root) it compares what was **granted**, from segurais or from a grants file exported from an identity provider, with what was **used**: actions that actually happened. Blocked attempts are listed separately, because they never happened.
+[`report.py`](../src/segurai/report.py) turns a window of recorded activity into least-privilege advice. For every identity (each agent by name, and each person's session root) it compares what was **granted**, from warrants or from a grants file exported from an identity provider, with what was **used**: actions that actually happened. Blocked attempts are listed separately, because they never happened.
 
 - operations never used, and targets never touched
 - wildcards that were only used for a few concrete resources

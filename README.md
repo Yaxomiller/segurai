@@ -45,7 +45,8 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 
 - Zero-integration path: existing OpenTelemetry GenAI spans become an observed chain with no code changes
 - CI on Linux, Windows and macOS across Python 3.10–3.13, plus packaging checks
-- Still to do: publishing to PyPI and a public repository (both need the maintainer's accounts)
+- Public repository, CI green on Linux, macOS and Windows across Python 3.10–3.13
+- PyPI release wired up and waiting on one PyPI setting ([docs/RELEASING.md](docs/RELEASING.md)); distribution is the remaining work
 
 **M4 — Tier 2 semantic judge: built, first live eval pending.**
 
@@ -57,7 +58,7 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 
 - Per agent and per person, over any window: operations never used, targets never touched, wildcards that could shrink, size limits against the largest real change
 - A proposed tightened scope built only from observed use, with the evidence behind it
-- Grants from segurais or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
+- Grants from warrants or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
 
 **M5 — design-partner pilots: kit ready.**
 
@@ -68,14 +69,21 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 ## Install
 
 ```bash
-pip install -e .                 # core: needs only `cryptography`
-pip install -e ".[langgraph]"    # + LangGraph integration
-pip install -e ".[mcp]"          # + MCP integration
-pip install -e ".[otel]"         # + OpenTelemetry spans
-pip install -e ".[intent]"       # + intent compiler (Anthropic SDK)
-pip install -e ".[judge]"        # + Tier 2 judge (Anthropic SDK)
-pip install -e ".[collector]"    # + collector protobuf support
-pip install -e ".[dev]"          # everything, plus pytest
+pip install segurai                 # core: needs only `cryptography`
+pip install "segurai[langgraph]"    # + LangGraph integration
+pip install "segurai[mcp]"          # + MCP integration
+pip install "segurai[otel]"         # + OpenTelemetry spans
+pip install "segurai[intent]"       # + intent compiler (Anthropic SDK)
+pip install "segurai[judge]"        # + Tier 2 judge (Anthropic SDK)
+pip install "segurai[collector]"    # + collector protobuf support
+```
+
+Working on Segurai itself:
+
+```bash
+git clone https://github.com/Yaxomiller/segurai && cd segurai
+pip install -e ".[dev]"             # everything, plus pytest and ruff
+python -m pytest -q
 ```
 
 ## Quick start
