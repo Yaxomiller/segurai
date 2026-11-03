@@ -60,6 +60,12 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 - A proposed tightened scope built only from observed use, with the evidence behind it
 - Grants from warrants or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
 
+**M7 — tamper-evident log: built.**
+
+- Every record appends to a hash chain in the same transaction, so an edited or deleted row no longer passes unnoticed
+- `segurai audit` names what changed; `segurai checkpoint` signs the chain's head with a key the database doesn't hold, which catches a full rewrite
+- 0.04 ms per checked action, against a 5 ms budget
+
 **M5 — design-partner pilots: kit ready.**
 
 - A hardened container for the collector and web view, and a Compose file that won't start without a token
@@ -252,6 +258,22 @@ The collector rebuilds every chain and re-checks every signature with the organi
 
 **Already using OpenTelemetry? Try it with no code changes.** Point your existing exporter at the collector. Standard GenAI spans (`invoke_agent`, `execute_tool`) from any framework are rebuilt into an *observed* chain: which agent called which tool, and for whom. Observed chains are clearly labeled — nothing in them was authorized, signed or checked — so they show where warrants would go before you adopt them.
 
+## Audit: proving the record wasn't touched
+
+Signatures already make a warrant impossible to alter unnoticed. The record of what agents *did* used to be ordinary rows — editable by anyone with database access. Now every record also appends to a hash chain:
+
+```bash
+segurai audit          # exits non-zero if anything was edited, deleted or reordered
+segurai checkpoint     # sign the chain's head; keep the line outside the database
+```
+
+```
+TAMPERING DETECTED - 1 problem(s):
+  ! row at entry 5 (act_038feb5d0f8648cd): this action no longer matches what was logged; the row was edited
+```
+
+A hash chain alone can be rebuilt by someone patient with database access, so the audit says so plainly when no checkpoint exists. A checkpoint closes it: the head hash signed with a key the database never contains, so a cover-up would need a forged signature too.
+
 ## Scope-creep report
 
 Which permissions did we give agents that they never used?
@@ -303,6 +325,8 @@ segurai keygen                # create a signing key
 segurai collect               # receive spans from agents (OTLP/HTTP)
 segurai ui                    # browse sessions in a web page
 segurai backup --out copy.db  # consistent copy of the database, safe while running
+segurai audit                 # check the tamper-evident log
+segurai checkpoint            # sign the log's current state
 segurai intent "<request>"    # compile a request into a scope contract
 segurai eval-intent ...       # grade the intent compiler on labeled cases
 segurai eval-tier1            # run the Tier 1 scenario suite (no API calls)
@@ -328,6 +352,8 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 
 **An action nobody can describe is not one anybody authorized.** A tool call whose arguments don't fit its `ActionSpec`, or a tool nobody wrote a spec for, is recorded as a violation rather than waved through.
 
+**The record is evidence, or it isn't.** A log an engineer can quietly edit proves nothing, so every record is hashed into a chain and the audit says exactly what changed. Where the guarantee ends is stated rather than glossed: without a checkpoint signed outside the database, a determined editor could rebuild the chain.
+
 **Observe by default.** Violations are recorded, nothing is blocked. Nobody lets an unproven library block production traffic — but they will let it watch, and watching produces the evidence that earns the right to enforce later.
 
 **Observability never breaks the agent.** A failing listener or exporter is logged and ignored.
@@ -342,6 +368,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M4 | Tier 2 semantic judge — built; first live eval pending |
 | M5 | Design-partner pilots — deployment kit and runbook ready |
 | M6 | Scope-creep report — built |
+| M7 | Tamper-evident log — built |
 
 Known limits are listed honestly at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#honest-limits-what-is-not-done-yet).
 

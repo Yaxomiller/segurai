@@ -6,6 +6,8 @@
     segurai creep <session_id>       granted vs exercised scope
     segurai report                   scope-creep report across sessions (M6)
     segurai keygen                   create a signing key
+    segurai audit                    check the tamper-evident log
+    segurai checkpoint               sign the log's current state
     segurai collect                  receive spans from agents over OTLP/HTTP
     segurai ui                       browse sessions in a web page
     segurai backup --out copy.db     copy the database safely while it is in use
@@ -165,6 +167,48 @@ def cmd_report(args: argparse.Namespace) -> int:
               f"{len(report.identities)} identities.")
     else:
         print(text)
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Check the tamper-evident log: records edited or deleted, entries removed."""
+    store = _store(args)
+    key_path = _find_key(args)
+    verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
+    report = store.audit(verifier)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.to_text())
+        if verifier is None and report.checkpoints:
+            print()
+            print("Checkpoint signatures were not checked: no key found. Pass --key, or keep "
+                  "the .key/.pub file beside the database.")
+    return 0 if report.ok else 1
+
+
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    """Sign the current head of the log.
+
+    The signing key must be a private key. On a collector that holds only the
+    organisation's public key, give it a key of its own for this purpose -
+    it signs statements about the log, never warrants.
+    """
+    store = _store(args)
+    key_path = Path(args.key) if args.key else Path(args.db).with_suffix(".key")
+    if not key_path.exists():
+        print(f"No signing key at {key_path}. Create one with: segurai keygen --key {key_path}")
+        return 1
+    try:
+        checkpoint = store.put_checkpoint(Authority.load(key_path))
+    except ValueError as exc:
+        print(f"Nothing to checkpoint: {exc}")
+        return 1
+    print(checkpoint.to_text())
+    print()
+    print("Keep this line somewhere outside the database - a ticket, an email to whoever "
+          "audits you, or a transparency log. Then even someone holding the key cannot "
+          "rewrite history that was already witnessed.")
     return 0
 
 
@@ -418,6 +462,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--format", default="md", choices=["md", "html", "json", "csv"])
     s.add_argument("--out", default=None, help="write the report here instead of printing it")
     s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("audit", help="check the tamper-evident log")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_audit)
+
+    s = sub.add_parser("checkpoint", help="sign the log's current state")
+    s.set_defaults(func=cmd_checkpoint)
 
     s = sub.add_parser("keygen", help="create a signing key")
     s.add_argument("--force", action="store_true", help="replace an existing key")

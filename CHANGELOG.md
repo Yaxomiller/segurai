@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Tamper-evident log (M7)
+
+- Every record written — session, warrant, action, verdict — also appends an entry to a hash chain, in the same transaction. Each entry's hash covers the entry before it, so editing a row, deleting a row, or removing, reordering or editing an entry all break the links.
+- `segurai audit` reports what was done in plain language: which record was edited, which was deleted, where the chain stops lining up. It exits non-zero when anything is wrong.
+- `segurai checkpoint` signs the current head of the chain with a key the database does not contain, which is what catches a wholesale rewrite. The checkpoint prints as one short line to keep outside the database; published somewhere external, it stops even a key-holder rewriting witnessed history.
+- Writing an identical record twice (the collector re-ingesting a trace that arrived in pieces) appends nothing; a record whose contents really changed is logged as an amendment, and the earlier entry stays — the log only ever grows.
+- Records written before the log existed are reported as such rather than blamed as tampering.
+- Cost: 0.04 ms per checked action, of which the append is ~13 µs. Tier 1's budget is 5 ms.
+
 ## [0.1.0] — 2026-11-03
 
 The first public release: milestones M0 to M6.

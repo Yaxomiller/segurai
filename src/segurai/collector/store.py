@@ -5,14 +5,18 @@ file you can open with any tool beats infrastructure you have to run. The
 schema is kept close to what a columnar store would want, so the eventual move
 to Postgres and then ClickHouse is a port rather than a redesign.
 
-Three tables:
-    sessions  - one row per human request
-    warrants  - one row per delegation hop (parent_id links them into a tree)
-    actions   - one row per thing an agent did, with the admission verdict
+The tables:
+    sessions    - one row per human request
+    warrants    - one row per delegation hop (parent_id links them into a tree)
+    actions     - one row per thing an agent did, with the admission verdict
+    verdicts    - the Tier 2 judge's view of flagged actions
+    ledger      - the tamper-evident hash chain over all of the above
+    checkpoints - signed statements of what the chain looked like at a moment
 
-Nothing here is append-only or tamper-evident yet. That is a later milestone
-and it matters - a log an engineer can edit is not evidence - but the
-signatures already make any edit to a *warrant* detectable.
+Every write goes through :meth:`Store._write_row`, which stores the row AND
+appends one entry to the ledger in the same transaction. Editing or deleting
+a row afterwards no longer goes unnoticed: see ledger.py for how that works,
+and :meth:`Store.audit` for the check.
 """
 
 from __future__ import annotations
@@ -20,10 +24,23 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from ..models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant
+from ..models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
+from .ledger import (
+    GENESIS,
+    LOGGED_KINDS,
+    AuditProblem,
+    AuditReport,
+    Checkpoint,
+    LedgerEntry,
+    entry_hash,
+    payload_hash,
+    row_payload,
+)
 
 __all__ = ["Store", "SessionRow"]
 
@@ -104,7 +121,38 @@ CREATE TABLE IF NOT EXISTS verdicts (
     latency_ms      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_verdicts_session ON verdicts(session_id);
+
+-- The tamper-evident log: one entry per record written, each hash covering
+-- the entry before it. See ledger.py.
+CREATE TABLE IF NOT EXISTS ledger (
+    seq            INTEGER PRIMARY KEY,
+    at             TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    ref_id         TEXT NOT NULL,
+    payload_hash   TEXT NOT NULL,
+    prev_hash      TEXT NOT NULL,
+    entry_hash     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(kind, ref_id);
+
+-- Signed statements of the head of the chain at a moment. The signing key is
+-- not in this database, so rebuilding the chain is not enough to hide a change.
+CREATE TABLE IF NOT EXISTS checkpoints (
+    seq            INTEGER PRIMARY KEY,
+    head           TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    key_id         TEXT,
+    signature      BLOB
+);
 """
+
+#: Which table each logged kind lives in, and the column holding its id.
+_LOGGED_TABLES = {
+    "session": ("sessions", "session_id"),
+    "warrant": ("warrants", "warrant_id"),
+    "action": ("actions", "action_id"),
+    "verdict": ("verdicts", "action_id"),
+}
 
 #: Columns added after the first release, as (table, column, SQL type). A
 #: database created by an older version gets them added on open, so old files
@@ -114,20 +162,6 @@ _ADDED_COLUMNS = [
     ("actions", "blocked", "INTEGER NOT NULL DEFAULT 0"),
     ("actions", "findings_json", "TEXT"),
 ]
-
-_SEGURAI_COLUMNS = ("warrant_id", "session_id", "root_principal", "holder", "scope_json",
-                    "issued_at", "expires_at", "parent_id", "depth", "signature", "key_id")
-_ACTION_COLUMNS = ("action_id", "session_id", "warrant_id", "actor", "operation", "resource",
-                   "scale", "irreversible", "at", "allowed", "violation", "detail_json",
-                   "blocked", "findings_json")
-
-
-def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
-    # Naming the columns (rather than relying on their order) keeps inserts
-    # correct on databases whose columns were added by a migration.
-    return (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
-            f"VALUES ({', '.join('?' for _ in columns)})")
-
 
 class SessionRow:
     __slots__ = ("session_id", "principal", "request", "contract", "started_at")
@@ -187,6 +221,193 @@ class Store:
             self._conn.execute(sql, params)
             self._conn.commit()
 
+    # ---- writing evidence, and logging it -------------------------------
+
+    def _write_row(self, table: str, values: dict[str, Any], kind: str, ref_id: str) -> None:
+        """Store one record and append its ledger entry, together or not at all.
+
+        Both happen in a single transaction, so there is no moment where a
+        record exists without its entry (which would look like tampering) or
+        an entry exists without its record (which would look like a deletion).
+        """
+        columns = tuple(values)
+        sql = (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
+               f"VALUES ({', '.join('?' for _ in columns)})")
+        with self._lock:
+            self._conn.execute(sql, tuple(values[c] for c in columns))
+            self._append_entry(kind, ref_id, row_payload(values))
+            self._conn.commit()
+
+    def _append_entry(self, kind: str, ref_id: str, payload: dict[str, Any]) -> None:
+        """Append one entry. Caller holds the lock and commits.
+
+        Writing the identical record twice appends nothing: the collector
+        re-ingests the same spans whenever a trace arrives in pieces, and
+        that is not a new fact. Writing a record whose contents CHANGED does
+        append - an amendment is a fact, and the earlier entry stays where it
+        is, because the log only ever grows.
+        """
+        body = payload_hash(payload)
+        latest = self._conn.execute(
+            "SELECT payload_hash FROM ledger WHERE kind = ? AND ref_id = ? "
+            "ORDER BY seq DESC LIMIT 1", (kind, ref_id)).fetchone()
+        if latest is not None and latest["payload_hash"] == body:
+            return
+
+        head = self._conn.execute(
+            "SELECT seq, entry_hash FROM ledger ORDER BY seq DESC LIMIT 1").fetchone()
+        seq = (head["seq"] + 1) if head is not None else 1
+        prev = head["entry_hash"] if head is not None else GENESIS
+        at = utcnow().isoformat()
+        self._conn.execute(
+            "INSERT INTO ledger VALUES (?,?,?,?,?,?,?)",
+            (seq, at, kind, ref_id, body, prev, entry_hash(seq, prev, kind, ref_id, body, at)),
+        )
+
+    # ---- reading the log ------------------------------------------------
+
+    def ledger_entries(self, since: int = 0) -> list[LedgerEntry]:
+        """Every entry from ``since`` onward, oldest first."""
+        rows = self._read("SELECT * FROM ledger WHERE seq > ? ORDER BY seq", (since,))
+        return [LedgerEntry(seq=r["seq"], at=r["at"], kind=r["kind"], ref_id=r["ref_id"],
+                            payload_hash=r["payload_hash"], prev_hash=r["prev_hash"],
+                            entry_hash=r["entry_hash"]) for r in rows]
+
+    def ledger_head(self) -> tuple[int, str]:
+        """The newest entry's sequence number and hash; (0, GENESIS) when empty."""
+        rows = self._read("SELECT seq, entry_hash FROM ledger ORDER BY seq DESC LIMIT 1")
+        return (rows[0]["seq"], rows[0]["entry_hash"]) if rows else (0, GENESIS)
+
+    def _logged_row(self, kind: str, ref_id: str) -> dict[str, Any] | None:
+        """One stored record as plain values, for comparing against its entry."""
+        table, id_column = _LOGGED_TABLES[kind]
+        rows = self._read(f"SELECT * FROM {table} WHERE {id_column} = ?", (ref_id,))
+        return row_payload(dict(rows[0])) if rows else None
+
+    # ---- checkpoints ----------------------------------------------------
+
+    def put_checkpoint(self, authority: Any) -> Checkpoint:
+        """Sign the current head of the chain and store it.
+
+        ``authority`` must hold a private key. On a collector that only holds
+        the organisation's public key, give it its own key for this purpose
+        (``segurai keygen --key ledger.key``): it signs statements about the
+        log, never warrants.
+        """
+        seq, head = self.ledger_head()
+        if seq == 0:
+            raise ValueError("there is nothing in the log to checkpoint yet")
+        checkpoint = Checkpoint(seq=seq, head=head, created_at=utcnow(), key_id=authority.key_id)
+        checkpoint = replace(checkpoint, signature=authority.sign_bytes(checkpoint.signing_bytes()))
+        self._write(
+            "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
+            (checkpoint.seq, checkpoint.head, checkpoint.created_at.isoformat(),
+             checkpoint.key_id, checkpoint.signature),
+        )
+        return checkpoint
+
+    def checkpoints(self) -> list[Checkpoint]:
+        rows = self._read("SELECT * FROM checkpoints ORDER BY seq")
+        return [Checkpoint(seq=r["seq"], head=r["head"],
+                           created_at=datetime.fromisoformat(r["created_at"]),
+                           key_id=r["key_id"], signature=r["signature"]) for r in rows]
+
+    # ---- the audit ------------------------------------------------------
+
+    def audit(self, verifier: Any = None) -> AuditReport:
+        """Check the log against itself, against the records, and against the checkpoints.
+
+        ``verifier`` is an Authority holding at least the public half of the
+        checkpoint-signing key. Without it the chain and the records are still
+        checked, but a wholesale rewrite by someone with database access would
+        not be caught - and the report says so.
+        """
+        report = AuditReport(signatures_checked=verifier is not None)
+        entries = self.ledger_entries()
+        report.entries = len(entries)
+
+        # 1. The chain against itself: no gaps, each entry links to the one
+        #    before it, and each entry's hash matches its own contents.
+        prev_hash = GENESIS
+        expected_seq = 1
+        intact = True
+        latest_for: dict[tuple[str, str], LedgerEntry] = {}
+        for e in entries:
+            if e.seq != expected_seq:
+                report.problems.append(AuditProblem(
+                    "chain", f"entry {expected_seq} is missing (the next one is {e.seq}); "
+                             f"entries were removed", seq=expected_seq))
+                intact = False
+            if e.prev_hash != prev_hash:
+                report.problems.append(AuditProblem(
+                    "chain", "this entry does not link to the one before it; entries were "
+                             "removed, reordered or edited", seq=e.seq))
+                intact = False
+            if e.entry_hash != e.recomputed_hash():
+                report.problems.append(AuditProblem(
+                    "chain", "the entry's own hash does not match its contents; the entry "
+                             "was edited", seq=e.seq))
+                intact = False
+            if intact:
+                report.verified_to = e.seq
+            prev_hash = e.entry_hash
+            expected_seq = e.seq + 1
+
+            key = (e.kind, e.ref_id)
+            if key in latest_for:
+                report.amendments += 1
+            latest_for[key] = e
+        report.head = prev_hash
+
+        # 2. The records against the log: each logged record must still exist
+        #    and still hash to what was logged.
+        for (kind, ref_id), e in sorted(latest_for.items(), key=lambda item: item[1].seq):
+            stored = self._logged_row(kind, ref_id)
+            if stored is None:
+                report.problems.append(AuditProblem(
+                    "row", f"this {kind} is in the log but its record is gone; the row was "
+                           f"deleted", seq=e.seq, ref_id=ref_id))
+                continue
+            report.rows_checked += 1
+            if payload_hash(stored) != e.payload_hash:
+                report.problems.append(AuditProblem(
+                    "row", f"this {kind} no longer matches what was logged; the row was "
+                           f"edited", seq=e.seq, ref_id=ref_id))
+
+        # 3. Records with no entry at all. Not tampering by itself - a database
+        #    written before the log existed has plenty - but worth stating.
+        for kind in LOGGED_KINDS:
+            table, id_column = _LOGGED_TABLES[kind]
+            stored_ids = {r[id_column] for r in self._read(f"SELECT {id_column} FROM {table}")}
+            logged_ids = {ref for (k, ref) in latest_for if k == kind}
+            report.rows_unlogged += len(stored_ids - logged_ids)
+
+        # 4. The checkpoints: the chain's hash at that point must still be what
+        #    was signed, and the signature must check out.
+        hash_at = {e.seq: e.entry_hash for e in entries}
+        checkpoints = self.checkpoints()
+        report.checkpoints = len(checkpoints)
+        for cp in checkpoints:
+            if cp.seq not in hash_at:
+                report.problems.append(AuditProblem(
+                    "checkpoint", f"covers entry {cp.seq}, which is not in the log any more",
+                    seq=cp.seq))
+                continue
+            if hash_at[cp.seq] != cp.head:
+                report.problems.append(AuditProblem(
+                    "checkpoint", "the log's hash at that point is not what was signed; "
+                                  "history was rewritten", seq=cp.seq))
+                continue
+            if verifier is not None:
+                try:
+                    verifier.verify_bytes(cp.signature or b"", cp.signing_bytes())
+                except Exception as exc:
+                    report.problems.append(AuditProblem(
+                        "checkpoint", f"its signature does not check out: {exc}", seq=cp.seq))
+                    continue
+            report.checkpoints_verified += 1
+        return report
+
     def _read(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute(sql, params).fetchall()
@@ -195,12 +416,13 @@ class Store:
 
     def put_session(self, session_id: str, principal: str, request: str,
                     contract: dict | None, started_at: datetime) -> None:
-        self._write(
-            "INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
-            (session_id, principal, request,
-             json.dumps(contract) if contract is not None else None,
-             started_at.isoformat()),
-        )
+        self._write_row("sessions", {
+            "session_id": session_id,
+            "principal": principal,
+            "request": request,
+            "contract_json": json.dumps(contract) if contract is not None else None,
+            "started_at": started_at.isoformat(),
+        }, kind="session", ref_id=session_id)
 
     def get_session(self, session_id: str) -> SessionRow | None:
         rows = self._read("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
@@ -223,12 +445,19 @@ class Store:
     # ---- warrants ----------------------------------------------------
 
     def put_warrant(self, w: Warrant) -> None:
-        self._write(
-            _insert_sql("warrants", _SEGURAI_COLUMNS),
-            (w.warrant_id, w.session_id, w.root_principal, w.holder,
-             json.dumps(w.scope.to_dict()), w.issued_at.isoformat(),
-             w.expires_at.isoformat(), w.parent_id, w.depth, w.signature, w.key_id),
-        )
+        self._write_row("warrants", {
+            "warrant_id": w.warrant_id,
+            "session_id": w.session_id,
+            "root_principal": w.root_principal,
+            "holder": w.holder,
+            "scope_json": json.dumps(w.scope.to_dict()),
+            "issued_at": w.issued_at.isoformat(),
+            "expires_at": w.expires_at.isoformat(),
+            "parent_id": w.parent_id,
+            "depth": w.depth,
+            "signature": w.signature,
+            "key_id": w.key_id,
+        }, kind="warrant", ref_id=w.warrant_id)
 
     def get_warrant(self, warrant_id: str) -> Warrant | None:
         rows = self._read("SELECT * FROM warrants WHERE warrant_id = ?", (warrant_id,))
@@ -265,17 +494,24 @@ class Store:
     # ---- actions -----------------------------------------------------
 
     def put_action(self, a: ActionRecord) -> None:
-        self._write(
-            _insert_sql("actions", _ACTION_COLUMNS),
-            (a.action_id, a.session_id, a.warrant_id, a.actor, a.operation,
-             a.resource, a.scale, int(a.irreversible), a.at.isoformat(),
-             int(a.allowed), a.violation,
-             # default=str: a caller's detail may hold dates or other objects
-             # JSON cannot encode; storing their text beats losing the action.
-             json.dumps(a.detail or {}, default=str),
-             int(a.blocked),
-             json.dumps([f.to_dict() for f in a.findings])),
-        )
+        self._write_row("actions", {
+            "action_id": a.action_id,
+            "session_id": a.session_id,
+            "warrant_id": a.warrant_id,
+            "actor": a.actor,
+            "operation": a.operation,
+            "resource": a.resource,
+            "scale": a.scale,
+            "irreversible": int(a.irreversible),
+            "at": a.at.isoformat(),
+            "allowed": int(a.allowed),
+            "violation": a.violation,
+            # default=str: a caller's detail may hold dates or other objects
+            # JSON cannot encode; storing their text beats losing the action.
+            "detail_json": json.dumps(a.detail or {}, default=str),
+            "blocked": int(a.blocked),
+            "findings_json": json.dumps([f.to_dict() for f in a.findings]),
+        }, kind="action", ref_id=a.action_id)
 
     def actions_for_session(self, session_id: str) -> list[ActionRecord]:
         """A session's actions in the order they were recorded.
@@ -303,11 +539,18 @@ class Store:
     def put_verdict(self, verdict) -> None:
         """Store a judge's Verdict. Judging an action again replaces its old verdict."""
         d = verdict.to_dict()
-        self._write(
-            "INSERT OR REPLACE INTO verdicts VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (d["action_id"], d["session_id"], d["verdict"], d["confidence"], d["reasoning"],
-             d["clause"], d["model"], d["prompt_version"], d["judged_at"], d["latency_ms"]),
-        )
+        self._write_row("verdicts", {
+            "action_id": d["action_id"],
+            "session_id": d["session_id"],
+            "verdict": d["verdict"],
+            "confidence": d["confidence"],
+            "reasoning": d["reasoning"],
+            "clause": d["clause"],
+            "model": d["model"],
+            "prompt_version": d["prompt_version"],
+            "judged_at": d["judged_at"],
+            "latency_ms": d["latency_ms"],
+        }, kind="verdict", ref_id=d["action_id"])
 
     def verdicts_for_session(self, session_id: str) -> dict:
         """The session's verdicts, keyed by action id."""

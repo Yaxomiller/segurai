@@ -225,10 +225,25 @@ class Authority:
         )
         return self._sign(w)
 
-    def _sign(self, w: Warrant) -> Warrant:
+    def sign_bytes(self, data: bytes) -> bytes:
+        """Sign arbitrary bytes with this key.
+
+        Used for statements that are not warrants - the tamper-evident log's
+        checkpoints (see collector/ledger.py).
+        """
         if self._key is None:
             raise ChainError("this authority holds only a public key and cannot sign")
-        return w.with_signature(self._key.sign(w.signing_bytes()))
+        return self._key.sign(data)
+
+    def verify_bytes(self, signature: bytes, data: bytes) -> None:
+        """Raise :class:`ChainError` unless ``signature`` is this key's over ``data``."""
+        try:
+            self._public.verify(signature, data)
+        except InvalidSignature as exc:
+            raise ChainError("the signature does not match this key") from exc
+
+    def _sign(self, w: Warrant) -> Warrant:
+        return w.with_signature(self.sign_bytes(w.signing_bytes()))
 
     def verify(self, w: Warrant) -> None:
         """Raise :class:`ChainError` if the signature does not check out."""

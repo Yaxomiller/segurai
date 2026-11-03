@@ -30,7 +30,7 @@ Map of the package:
     actions.py       ActionSpec - describing a tool call as an action
     runtime.py       the API above: session, agent, act, tool, configure
     scenarios.py     the Tier 1 scenario suite (milestone M2)
-    collector/       SQLite storage and rebuilding/rendering the chain
+    collector/       SQLite storage, the tamper-evident log, chain rendering
     instrument/      optional integrations: OpenTelemetry, LangGraph, MCP
     cli.py           the `segurai` command
 """
@@ -39,6 +39,7 @@ from ._version import __version__
 from .actions import ActionSpec, ActionSpecError, arg, count
 from .authority import Authority, ChainError, verify_chain
 from .collector.chain import chain_summary, render_session
+from .collector.ledger import AuditReport, Checkpoint
 from .collector.store import Store
 from .context import (
     NoWarrantError,
@@ -82,7 +83,8 @@ __all__ = [
     "current_warrant", "bind_warrant", "export_warrant", "import_warrant",
     "NoWarrantError",
     # storage and reporting
-    "Store", "render", "summary", "verify_session",
+    "Store", "render", "summary", "verify_session", "audit", "checkpoint",
+    "AuditReport", "Checkpoint",
 ]
 
 
@@ -124,3 +126,21 @@ def verify_session(session_id: str, allow_expired: bool = True) -> list[str]:
         except (ChainError, ValueError) as exc:
             problems.append(f"{leaf.holder} [{leaf.warrant_id}]: {exc}")
     return problems
+
+
+def audit(verify_signatures: bool = True) -> AuditReport:
+    """Check the tamper-evident log of the configured store.
+
+    Reports any record that was edited or deleted, any entry removed from the
+    log, and whether the signed checkpoints still hold. With
+    ``verify_signatures=False`` the checkpoint signatures are not checked -
+    useful only when the key is unavailable, and the report says so.
+    """
+    store, authority = _runtime.ensure()
+    return store.audit(authority if verify_signatures else None)
+
+
+def checkpoint() -> Checkpoint:
+    """Sign the current head of the log, so later rewrites of it are detectable."""
+    store, authority = _runtime.ensure()
+    return store.put_checkpoint(authority)

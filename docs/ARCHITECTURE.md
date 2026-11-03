@@ -234,6 +234,41 @@ Integrations talk to the runtime through **listeners** ([`runtime.Listener`](../
 
 ---
 
+## The tamper-evident log
+
+Signatures make a *warrant* impossible to alter unnoticed. The record of what agents **did** was ordinary database rows: anyone with write access could turn a 400-record delete into 4, or delete the row, and nothing would show. [`collector/ledger.py`](../src/segurai/collector/ledger.py) fixes that.
+
+Every record written — session, warrant, action, verdict — appends one entry to a hash chain, in the same transaction as the row:
+
+```
+ seq  kind     ref_id            payload_hash  prev_hash   entry_hash
+   1  session  ses_5d1dff8d...   a91f...       000000...   4c7b...
+   2  warrant  wrt_7a075223...   77de...       4c7b...     e011...
+   3  action   act_3f22fd11...   b3c0...       e011...      91aa...   <- head
+```
+
+Each entry's hash covers its own contents *and* the previous entry's hash, so the newest hash depends on everything before it. `segurai audit` then checks three things and reports in plain language:
+
+| Tampering | How it shows |
+|---|---|
+| A row was edited | its contents no longer hash to what the entry recorded |
+| A row was deleted | its entry still stands, pointing at nothing |
+| Entries removed, reordered or edited | the chain of hashes stops lining up |
+
+**Where a hash chain alone stops.** Someone with the database file and patience can rebuild the entire chain so it agrees with itself again. The audit says so whenever no checkpoint exists, rather than implying a guarantee it doesn't have. A **checkpoint** closes the gap: the head hash signed with a key the database does not contain, so a cover-up would need a forged signature too. It prints as one line to keep elsewhere:
+
+```
+segurai-checkpoint seq=5 head=69ea9d05... at=2026-11-03T09:03:50Z key=key_99a3... sig=GuiS5cVk...
+```
+
+Published outside the organisation — a transparency log, or an email to whoever audits you — it means not even a key-holder can rewrite history that was already witnessed.
+
+Two deliberate choices: writing an **identical** record twice appends nothing (the collector re-ingests traces that arrive in pieces, which is not a new fact), while a record whose contents really changed is logged as an **amendment** with the earlier entry left in place — the log only grows. And raw OpenTelemetry spans are not logged: they are the input, and what is rebuilt from them is.
+
+Cost: 0.04 ms per checked action, of which the append is about 13 µs, against Tier 1's 5 ms budget.
+
+---
+
 ## Storage
 
 [`collector/store.py`](../src/segurai/collector/store.py) — SQLite, one file, three tables: `sessions`, `warrants`, `actions`. Chosen because a file anyone can open beats infrastructure anyone must run. Older database files are upgraded automatically when new columns are added. [`collector/chain.py`](../src/segurai/collector/chain.py) rebuilds and draws the delegation tree.
@@ -275,6 +310,7 @@ src/segurai/
     chain.py           tree reconstruction and rendering
     otlp.py            rebuilding warrants, actions and observed chains from received spans
     server.py          the collector's HTTP endpoint
+    ledger.py          the tamper-evident hash chain and its audit (M7)
     web.py             the read-only web view
   intent/
     contract.py        Catalog and ScopeContract; catalog check, fail-closed scale
@@ -306,6 +342,7 @@ tests/                 one file per area; see below
 | `test_runtime.py`, `test_tools_async.py` | the developer API, async agents, tools, listeners, delegation across boundaries |
 | `test_chain.py`, `test_render.py`, `test_store.py` | reconstruction, output on any terminal, blocked vs went-ahead, old database files |
 | `test_otel.py`, `test_langgraph.py`, `test_mcp.py` | each integration against the real library |
+| `test_ledger.py` | editing a row, deleting one, cutting or reordering the log, and rebuilding the whole chain are each detected and named; amendments and re-ingest are not mistaken for tampering |
 | `test_collector.py` | spans from the real OpenTelemetry exporter rebuild a verified chain; forged, oversized and unauthorised input is refused |
 | `test_web.py`, `test_intent_checks.py` | the web view escapes request text, shows findings and failed verification, and requires the token; compiled checks are validated against catalog evidence |
 | `test_observed.py` | ordinary OpenTelemetry GenAI spans, arriving in any order, rebuild an observed chain labeled as unchecked |
@@ -319,7 +356,7 @@ tests/                 one file per area; see below
 ## Honest limits (what is not done yet)
 
 - **The signing key sits with the agent process.** Fine for development; in production an agent that holds the key could mint itself anything. Moving signing into a separate collector is a later milestone.
-- **The database is not tamper-evident.** Warrants are signed, so editing one is caught; but a deleted *action* row leaves no trace. A hash-chained, append-only log is planned (M7).
+- **Tamper-evidence needs a witness to be complete.** Edits, deletions and reordering are caught by the chain; a wholesale rebuild is caught only if a checkpoint was signed, and a key-holder can still rewrite history that was never witnessed outside the database. Publishing checkpoints to an external transparency log is the remaining step.
 - **Neither the intent compiler nor the judge has been measured live.** Both are built and tested offline. Their eval sets need an Anthropic API key to run, and both were labeled by Claude, so people should review the labels before any score is quoted.
 - **The judge's two-second latency target is unmeasured.** It can only be checked against the live API.
 - **The report sees one window.** Permissions needed only by rare jobs look unused in a short window; confidence reflects how much activity was seen, not certainty. Identity-provider grants arrive as an exported file, not through live connectors.

@@ -116,6 +116,13 @@ segurai report --days 7 --format csv --out week-N-unused.csv
 segurai report --days 7 --format html --out week-N-report.html
 ```
 
+Then take the week's evidence snapshot — one line to paste into the weekly notes, and the thing that makes the records provable later:
+
+```bash
+segurai audit
+segurai checkpoint
+```
+
 If an Anthropic API key is available, judge the week's flagged actions (each flagged action is one paid call):
 
 ```bash
@@ -169,6 +176,7 @@ Then delete the data unless agreed otherwise: `docker compose -f deploy/compose.
 |---|---|
 | Who made each request (the principal), and the request text unless turned off | Prompts sent to models, and model responses |
 | Each agent hop's signed warrant: what it was allowed to do | Tool outputs |
+| A hash-chain entry per record, so an edit or deletion is detectable | |
 | Each action: operation, resource, size, findings, and the evidence the agent reported | Anything from spans that aren't agent or tool spans, beyond their ids and names |
 | Tool-call arguments, for observed chains (if the framework records them) | |
 
