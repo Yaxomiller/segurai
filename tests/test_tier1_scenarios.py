@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from warrant.scenarios import load_scenarios, run_scenarios
+from segurai.scenarios import load_scenarios, run_scenarios
 
 SCENARIOS = load_scenarios(Path(__file__).resolve().parents[1] / "evals" / "tier1" / "scenarios.json")
 
@@ -40,8 +40,8 @@ def test_a_checked_action_is_well_under_five_milliseconds(report):
 
 
 def test_the_runner_leaves_the_runtime_as_it_found_it():
-    import warrant
+    import segurai
 
-    store_before = warrant._runtime.store
+    store_before = segurai._runtime.store
     run_scenarios(SCENARIOS[:1])
-    assert warrant._runtime.store is store_before
+    assert segurai._runtime.store is store_before

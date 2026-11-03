@@ -11,13 +11,13 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-import warrant
-from warrant import ActionSpec, Authority, Scope, Store, count, verify_chain
-from warrant.collector.chain import render_session
-from warrant.collector.otlp import ingest
-from warrant.collector.server import CollectorServer
-from warrant.instrument import otel
-from warrant.instrument.otel import warrant_attributes
+import segurai
+from segurai import ActionSpec, Authority, Scope, Store, count, verify_chain
+from segurai.collector.chain import render_session
+from segurai.collector.otlp import ingest
+from segurai.collector.server import CollectorServer
+from segurai.instrument import otel
+from segurai.instrument.otel import warrant_attributes
 
 GRANTED = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
 
@@ -80,23 +80,23 @@ def test_spans_from_an_agent_process_rebuild_the_verified_chain(collector, signe
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=_url(server))))
     # The "agent process": its own local store, the organisation's signing key.
-    warrant.configure(store=":memory:", authority=signer)
+    segurai.configure(store=":memory:", authority=signer)
     otel.enable(provider)
     try:
-        @warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
+        @segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
         def delete_records(table, ids):
             return len(ids)
 
-        @warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+        @segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
         def crm_agent():
-            warrant.act("read", "crm.opportunities", scale=412)
+            segurai.act("read", "crm.opportunities", scale=412)
             delete_records("opportunities", list(range(400)))
 
-        @warrant.agent("assistant")
+        @segurai.agent("assistant")
         def assistant():
             crm_agent()
 
-        with warrant.session(principal="sarah@company.com",
+        with segurai.session(principal="sarah@company.com",
                              request="clean up our old sales records", scope=GRANTED) as s:
             assistant()
     finally:

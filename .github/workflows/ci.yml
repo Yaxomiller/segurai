@@ -37,7 +37,7 @@ jobs:
       - name: Tests
         run: python -m pytest -q
       - name: Tier 1 scenario suite (milestone M2 target)
-        run: warrant eval-tier1
+        run: segurai eval-tier1
 
   package:
     name: package builds cleanly
@@ -56,4 +56,4 @@ jobs:
       - name: Install the wheel and import it
         run: |
           python -m pip install dist/*.whl
-          python -c "import warrant; print('warrant', warrant.__version__)"
+          python -c "import segurai; print('segurai', segurai.__version__)"

@@ -11,14 +11,14 @@ import httpx2
 import pytest
 from anthropic import Anthropic, DefaultHttpxClient
 
-from warrant.intent import (
+from segurai.intent import (
     Catalog,
     ClaudeBackend,
     IntentCompiler,
     IntentError,
     IntentRefused,
 )
-from warrant.intent.compiler import FALLBACK_BETA
+from segurai.intent.compiler import FALLBACK_BETA
 
 CATALOG = Catalog.from_dict({
     "operations": {"read": "look up", "search": "search", "archive": "hide", "delete": "remove"},

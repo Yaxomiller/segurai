@@ -3,9 +3,9 @@
 from collections import Counter
 from pathlib import Path
 
-from warrant._claude import ModelCallError
-from warrant.judge import VERDICTS, Judge, render_review
-from warrant.judge.eval import load_cases, run_eval
+from segurai._claude import ModelCallError
+from segurai.judge import VERDICTS, Judge, render_review
+from segurai.judge.eval import load_cases, run_eval
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = load_cases(ROOT / "evals" / "tier2" / "cases.jsonl")

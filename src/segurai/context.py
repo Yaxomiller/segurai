@@ -52,7 +52,7 @@ def current_warrant(required: bool = True) -> Warrant | None:
     if w is None and required:
         raise NoWarrantError(
             "no warrant in context - the chain would break here. "
-            "Start one with warrant.session(...), or if this hop crossed a "
+            "Start one with segurai.session(...), or if this hop crossed a "
             "thread or process boundary, pass it explicitly with "
             "export_warrant()/import_warrant()."
         )

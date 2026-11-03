@@ -5,8 +5,8 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-from warrant.intent import Catalog, IntentCompiler, IntentError, ScopeContract
-from warrant.intent.eval import grade, load_cases, run_eval
+from segurai.intent import Catalog, IntentCompiler, IntentError, ScopeContract
+from segurai.intent.eval import grade, load_cases, run_eval
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = Catalog.load(ROOT / "evals" / "intent" / "catalog.json")

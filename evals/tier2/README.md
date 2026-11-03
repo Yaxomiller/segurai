@@ -14,7 +14,7 @@ Every case is a paid Claude call, so the command asks for `--yes`:
 
 ```bash
 export ANTHROPIC_API_KEY=...
-warrant eval-judge --cases evals/tier2/cases.jsonl --out judge-report.json --yes
+segurai eval-judge --cases evals/tier2/cases.jsonl --out judge-report.json --yes
 ```
 
 It prints agreement (overall and on ambiguous cases), dangerous misses, deferrals, latency and a confusion table. It exits 0 only if the target is met.

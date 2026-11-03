@@ -30,7 +30,7 @@ SERVER SIDE - continue the chain inside a tool:
     @server.tool()
     async def delete_records(table: str, ids: list[int], ctx: Context) -> str:
         with bind_from_meta(ctx, holder="crm_server"):
-            warrant.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
+            segurai.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
             ...
 
   The server checks the incoming warrant's signature, derives a child warrant

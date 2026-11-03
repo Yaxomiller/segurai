@@ -14,11 +14,11 @@ Keys
 ----
 An Authority holds a private key (it can sign and verify) or only a public key
 (it can verify, nothing else - what an auditor should hold). Keys can be saved
-to and loaded from PEM files, which is what lets ``warrant verify`` check
+to and loaded from PEM files, which is what lets ``segurai verify`` check
 signatures made in an earlier run:
 
-    Authority.load_or_create("warrant.key")     # private key, created if missing
-    Authority.verifier("warrant.pub")           # public key only
+    Authority.load_or_create("segurai.key")     # private key, created if missing
+    Authority.verifier("segurai.pub")           # public key only
 
 Every warrant names the key that signed it (``key_id``), so a failed check can
 say "signed by a different key" rather than just "invalid".

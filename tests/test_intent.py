@@ -5,9 +5,9 @@ A fake backend stands in for Claude, so these tests make no API calls.
 
 import pytest
 
-import warrant
-from warrant import Scope
-from warrant.intent import Catalog, IntentCompiler, IntentError
+import segurai
+from segurai import Scope
+from segurai.intent import Catalog, IntentCompiler, IntentError
 
 CATALOG = Catalog.from_dict({
     "operations": {"read": "look up", "search": "search", "archive": "hide without deleting",
@@ -126,30 +126,30 @@ def test_catalog_renders_the_same_whatever_order_it_was_written_in():
 
 
 def test_session_derives_its_scope_from_the_request():
-    warrant.configure(intent=IntentCompiler(CATALOG, FakeBackend(SARAH)))
+    segurai.configure(intent=IntentCompiler(CATALOG, FakeBackend(SARAH)))
     ceiling = Scope.of(operations=["read", "search", "archive", "delete"], targets=["crm.*"],
                        max_scale=500)
-    with warrant.session(principal="sarah@company.com",
+    with segurai.session(principal="sarah@company.com",
                          request="clean up our old sales records", ceiling=ceiling) as s:
-        rec = warrant.act("delete", "crm.opportunities", scale=400)
+        rec = segurai.act("delete", "crm.opportunities", scale=400)
 
     assert not rec.allowed and "exceeds limit 50" in rec.violation
-    stored = warrant._runtime.store.get_session(s.session_id).contract
+    stored = segurai._runtime.store.get_session(s.session_id).contract
     assert stored["contract"]["goal"] == SARAH["goal"]
     assert stored["prompt_version"]
-    out = warrant.render(s.session_id, charset="ascii")
+    out = segurai.render(s.session_id, charset="ascii")
     assert "Goal      : Remove or archive outdated sales records" in out
     assert "Condition : must not affect active customers" in out
 
 
 def test_session_without_a_scope_or_compiler_says_what_to_do():
     with pytest.raises(ValueError, match="intent compiler"):
-        with warrant.session(principal="p", request="r"):
+        with segurai.session(principal="p", request="r"):
             pass
 
 
 def test_the_ceiling_also_clamps_a_hand_written_scope():
-    with warrant.session(principal="p", request="r",
+    with segurai.session(principal="p", request="r",
                          scope=Scope.of(operations=["read", "delete"], targets=["crm.*"]),
                          ceiling=Scope.of(operations=["read"], targets=["crm.accounts"])) as s:
         assert s.root_warrant.scope.operations == {"read"}

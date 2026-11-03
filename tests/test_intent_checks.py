@@ -5,8 +5,8 @@ import json
 import httpx2
 from anthropic import Anthropic, DefaultHttpxClient
 
-import warrant
-from warrant.intent import Catalog, ClaudeBackend, IntentCompiler, ScopeContract
+import segurai
+from segurai.intent import Catalog, ClaudeBackend, IntentCompiler, ScopeContract
 
 CATALOG = Catalog.from_dict({
     "operations": {"read": "look up", "search": "search", "archive": "hide", "delete": "remove"},
@@ -95,9 +95,9 @@ def test_a_stored_contract_round_trips_with_its_checks():
 
 
 def test_compiled_checks_catch_a_violating_action_end_to_end():
-    warrant.configure(intent=IntentCompiler(CATALOG, FakeBackend(CONTRACT)))
-    with warrant.session(principal="sarah@company.com", request="clean up our old sales records"):
-        rec = warrant.act("archive", "crm.opportunities", scale=2,
+    segurai.configure(intent=IntentCompiler(CATALOG, FakeBackend(CONTRACT)))
+    with segurai.session(principal="sarah@company.com", request="clean up our old sales records"):
+        rec = segurai.act("archive", "crm.opportunities", scale=2,
                           days_since_activity=[400, 9], account_status=["churned"])
     assert not rec.allowed
     assert [f.clause for f in rec.findings] == ["only records with no recent activity"]

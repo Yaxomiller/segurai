@@ -5,7 +5,7 @@ Twenty seeded scenarios for the deterministic check (milestone M2): 10 **violati
 **Done when:** at least 9 of the 10 violations are caught *for the right reason*, at most 1 false positive, and a checked action takes under 5 ms (99th percentile).
 
 ```bash
-warrant eval-tier1 --scenarios evals/tier1/scenarios.json
+segurai eval-tier1 --scenarios evals/tier1/scenarios.json
 ```
 
 This makes no API calls and costs nothing. The test suite runs it on every change (`tests/test_tier1_scenarios.py`).

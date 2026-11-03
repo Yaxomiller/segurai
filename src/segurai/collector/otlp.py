@@ -3,14 +3,14 @@
 When agents run in several processes or on several machines, each one sends
 its spans to one collector. Two kinds of span are understood:
 
-  1. WARRANT SPANS - emitted by warrant's own instrumentation
+  1. WARRANT SPANS - emitted by Segurai's own instrumentation
      (instrument/otel.py). They carry every field of every signed warrant and
      every action, so the collector rebuilds the chain exactly - and re-checks
      every signature itself, trusting nothing the senders claim.
 
   2. PLAIN GENAI SPANS - emitted by any framework that follows the
      OpenTelemetry GenAI conventions ("invoke_agent ...", "execute_tool ...").
-     No warrant code was involved, so nothing was authorized or checked. The
+     No Segurai code was involved, so nothing was authorized or checked. The
      collector still rebuilds an OBSERVED chain from them - which agent called
      which tool, under whom - and labels it clearly as observed. This is the
      zero-integration path: a team already sending OpenTelemetry can see its
@@ -26,7 +26,7 @@ A trace that carries warrant spans is never also built as observed.
 Two wire encodings of the same OTLP "ExportTraceServiceRequest" are accepted:
 
   * protobuf  - what OpenTelemetry's standard OTLP/HTTP exporter sends
-                (needs: pip install 'warrant-provenance[collector]')
+                (needs: pip install 'segurai[collector]')
   * JSON      - OTLP/JSON, what the OpenTelemetry Collector and curl send
 
 The shape of an OTLP request, reduced to what matters here:
@@ -58,7 +58,7 @@ from .store import Store
 __all__ = ["decode_request", "ingest", "IngestReport", "UnsupportedEncoding", "OBSERVED_FINDING"]
 
 # The attributes a span must have to carry a complete warrant.
-_WARRANT_KEYS = ("warrant.id", "warrant.session_id", "warrant.holder", "warrant.root_principal",
+_SEGURAI_KEYS = ("warrant.id", "warrant.session_id", "warrant.holder", "warrant.root_principal",
                  "warrant.depth", "warrant.scope", "warrant.issued_at", "warrant.expires_at")
 
 # From plain spans only these attributes are kept: enough to rebuild an
@@ -111,7 +111,7 @@ def decode_request(body: bytes, content_type: str) -> dict[str, Any]:
             )
         except ImportError as exc:
             raise UnsupportedEncoding(
-                "reading protobuf needs: pip install 'warrant-provenance[collector]'"
+                "reading protobuf needs: pip install 'segurai[collector]'"
             ) from exc
         try:
             message = ExportTraceServiceRequest.FromString(body)
@@ -217,7 +217,7 @@ def _warrant(a: Mapping[str, Any]) -> Warrant:
         expires_at=datetime.fromisoformat(a["warrant.expires_at"]),
         parent_id=a.get("warrant.parent_id") or None,
         depth=int(a["warrant.depth"]),
-        key_id=a.get("warrant.key_id") or None,
+        key_id=a.get("segurai.key_id") or None,
         signature=base64.b64decode(signature) if signature else None,
     )
 
@@ -245,7 +245,7 @@ def _ingest_warrant_span(store: Store, attrs: Mapping[str, Any], verifier: Autho
                          report: IngestReport) -> None:
     used = False
     try:
-        if all(k in attrs for k in _WARRANT_KEYS):
+        if all(k in attrs for k in _SEGURAI_KEYS):
             w = _warrant(attrs)
             if verifier is not None:
                 verifier.verify(w)      # raises ChainError if forged or altered
@@ -376,7 +376,7 @@ def ingest(store: Store, request: Mapping[str, Any], verifier: Authority | None 
     Warrant spans: with a ``verifier`` (the organisation's public key), each
     warrant's signature is checked and a warrant that fails is NOT stored -
     its id and the reason go into ``report.rejected``. Without one, warrants
-    are stored as received, and ``warrant verify`` can check them later.
+    are stored as received, and ``segurai verify`` can check them later.
 
     Plain GenAI spans: kept, and their trace's observed chain rebuilt.
 

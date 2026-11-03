@@ -1,8 +1,8 @@
 import pytest
 
-import warrant
-from warrant import Scope
-from warrant.context import NoWarrantError
+import segurai
+from segurai import Scope
+from segurai.context import NoWarrantError
 
 GRANTED = Scope.of(
     operations=["read", "update", "delete"],
@@ -13,13 +13,13 @@ GRANTED = Scope.of(
 
 @pytest.fixture(autouse=True)
 def fresh_runtime():
-    warrant.configure(store=":memory:", authority=warrant.Authority(),
-                      mode=warrant.Mode.OBSERVE)
+    segurai.configure(store=":memory:", authority=segurai.Authority(),
+                      mode=segurai.Mode.OBSERVE)
     yield
 
 
 def _open():
-    return warrant.session(
+    return segurai.session(
         principal="sarah@company.com",
         request="clean up our old sales records",
         scope=GRANTED,
@@ -28,7 +28,7 @@ def _open():
 
 def test_act_outside_a_session_raises():
     with pytest.raises(NoWarrantError, match="no warrant in context"):
-        warrant.act("read", "crm.opportunities")
+        segurai.act("read", "crm.opportunities")
 
 
 def test_session_records_root_warrant():
@@ -40,7 +40,7 @@ def test_session_records_root_warrant():
 
 def test_permitted_action_is_recorded_as_allowed():
     with _open() as s:
-        rec = warrant.act("read", "crm.opportunities", scale=5)
+        rec = segurai.act("read", "crm.opportunities", scale=5)
         assert rec.allowed and rec.violation is None
         assert len(s.actions()) == 1
         assert s.violations() == []
@@ -48,26 +48,26 @@ def test_permitted_action_is_recorded_as_allowed():
 
 def test_violation_is_recorded_but_not_blocked_in_observe_mode():
     with _open() as s:
-        rec = warrant.act("delete", "crm.opportunities", scale=400)
+        rec = segurai.act("delete", "crm.opportunities", scale=400)
         assert rec.allowed is False
         assert "scale 400 exceeds limit 50" in rec.violation
         assert len(s.violations()) == 1
 
 
 def test_violation_raises_in_enforce_mode():
-    warrant.configure(mode=warrant.Mode.ENFORCE)
+    segurai.configure(mode=segurai.Mode.ENFORCE)
     with _open() as s:
-        with pytest.raises(warrant.ViolationError, match="exceeds limit"):
-            warrant.act("delete", "crm.opportunities", scale=400)
+        with pytest.raises(segurai.ViolationError, match="exceeds limit"):
+            segurai.act("delete", "crm.opportunities", scale=400)
         # still recorded, even though it raised
         assert len(s.violations()) == 1
 
 
 def test_agent_decorator_attenuates_and_attributes():
-    @warrant.agent("crm_agent", scope=Scope.of(
+    @segurai.agent("crm_agent", scope=Scope.of(
         operations=["read"], targets=["crm.opportunities"], max_scale=10))
     def crm_agent():
-        return warrant.act("read", "crm.opportunities", scale=3)
+        return segurai.act("read", "crm.opportunities", scale=3)
 
     with _open() as s:
         rec = crm_agent()
@@ -79,21 +79,21 @@ def test_agent_decorator_attenuates_and_attributes():
 
 
 def test_agent_cannot_widen_its_own_scope():
-    @warrant.agent("rogue", scope=Scope.of(operations=["read", "purge"], targets=["*"]))
+    @segurai.agent("rogue", scope=Scope.of(operations=["read", "purge"], targets=["*"]))
     def rogue():
         pass
 
     with _open():
-        with pytest.raises(warrant.ChainError, match="would widen authority"):
+        with pytest.raises(segurai.ChainError, match="would widen authority"):
             rogue()
 
 
 def test_child_scope_constrains_even_when_parent_would_allow():
     """The CRM agent is capped at 10 though Sarah granted 50."""
-    @warrant.agent("crm_agent", scope=Scope.of(
+    @segurai.agent("crm_agent", scope=Scope.of(
         operations=["read", "delete"], targets=["crm.opportunities"], max_scale=10))
     def crm_agent():
-        return warrant.act("delete", "crm.opportunities", scale=30)
+        return segurai.act("delete", "crm.opportunities", scale=30)
 
     with _open():
         rec = crm_agent()
@@ -102,11 +102,11 @@ def test_child_scope_constrains_even_when_parent_would_allow():
 
 
 def test_nested_agents_build_a_three_hop_chain():
-    @warrant.agent("crm_agent")
+    @segurai.agent("crm_agent")
     def crm_agent():
-        return warrant.act("read", "crm.opportunities")
+        return segurai.act("read", "crm.opportunities")
 
-    @warrant.agent("assistant")
+    @segurai.agent("assistant")
     def assistant():
         return crm_agent()
 
@@ -118,20 +118,20 @@ def test_nested_agents_build_a_three_hop_chain():
 
 
 def test_verify_session_passes_for_an_honest_run():
-    @warrant.agent("assistant")
+    @segurai.agent("assistant")
     def assistant():
-        warrant.act("read", "crm.opportunities")
+        segurai.act("read", "crm.opportunities")
 
     with _open() as s:
         assistant()
-        assert warrant.verify_session(s.session_id) == []
+        assert segurai.verify_session(s.session_id) == []
 
 
 def test_export_import_round_trip():
     with _open():
-        token = warrant.export_warrant()
-        restored = warrant.import_warrant(token)
-        original = warrant.current_warrant()
+        token = segurai.export_warrant()
+        restored = segurai.import_warrant(token)
+        original = segurai.current_warrant()
         assert restored.warrant_id == original.warrant_id
         assert restored.scope == original.scope
         assert restored.signature == original.signature
@@ -139,16 +139,16 @@ def test_export_import_round_trip():
 
 def test_imported_warrant_still_verifies():
     with _open():
-        token = warrant.export_warrant()
-    restored = warrant.import_warrant(token)
-    warrant._runtime.authority.verify(restored)  # must not raise
+        token = segurai.export_warrant()
+    restored = segurai.import_warrant(token)
+    segurai._runtime.authority.verify(restored)  # must not raise
 
 
 def test_agent_that_only_narrows_operations_can_still_act():
     """Regression: declaring only operations used to leave the agent no targets."""
-    @warrant.agent("reader", scope=Scope.of(operations=["read"]))
+    @segurai.agent("reader", scope=Scope.of(operations=["read"]))
     def reader():
-        return warrant.act("read", "crm.opportunities")
+        return segurai.act("read", "crm.opportunities")
 
     with _open():
         rec = reader()

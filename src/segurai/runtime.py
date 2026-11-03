@@ -3,15 +3,15 @@
 A handful of things to learn, and that is deliberate - adoption dies on
 surface area:
 
-    with warrant.session(principal=..., request=..., scope=...) as s:  # a human asks
+    with segurai.session(principal=..., request=..., scope=...) as s:  # a human asks
         ...
 
-    @warrant.agent("crm_agent")                                         # an agent hop
+    @segurai.agent("crm_agent")                                         # an agent hop
     def crm_agent(...): ...
 
-    warrant.act("delete", "crm.opportunities", scale=400)               # record an action
+    segurai.act("delete", "crm.opportunities", scale=400)               # record an action
 
-    @warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids")))
+    @segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids")))
     def delete_records(table, ids): ...                                 # or guard a tool
 
 How a call flows through this file:
@@ -61,7 +61,7 @@ __all__ = [
 ]
 
 F = TypeVar("F", bound=Callable[..., Any])
-_log = logging.getLogger("warrant")
+_log = logging.getLogger("segurai")
 
 
 class Mode(str, Enum):
@@ -185,8 +185,8 @@ def configure(
 
     ``key`` is a signing-key file, created if missing. When ``store`` is a
     file path and neither ``authority`` nor ``key`` is given, the key lives
-    beside the database (``warrant.db`` -> ``warrant.key``). Keeping the key
-    is what lets ``warrant verify`` check signatures in a later run.
+    beside the database (``segurai.db`` -> ``segurai.key``). Keeping the key
+    is what lets ``segurai verify`` check signatures in a later run.
 
     ``intent`` is an ``IntentCompiler``. With one set, ``session()`` can be
     opened without a scope and derives it from the request text.
@@ -275,7 +275,7 @@ def session(
         if _rt.intent is None:
             raise ValueError(
                 "session() needs a scope, or an intent compiler to derive one from the request: "
-                "warrant.configure(intent=IntentCompiler(catalog))"
+                "segurai.configure(intent=IntentCompiler(catalog))"
             )
         compiled = _rt.intent.compile(request)
         scope = compiled.contract.to_scope()
@@ -335,7 +335,7 @@ def agent(name: str, scope: Scope | None = None, ttl: timedelta | None = None) -
     """
 
     def decorator(fn: F) -> F:
-        _reject_generators(fn, f"@warrant.agent({name!r})")
+        _reject_generators(fn, f"@segurai.agent({name!r})")
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
@@ -422,7 +422,7 @@ def act(
 
     Extra keyword arguments are kept as ``detail`` and double as the
     action's evidence for the scope's conditions, e.g.
-    ``warrant.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])``.
+    ``segurai.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])``.
     """
     w = current_warrant()
     findings = _evaluate(w, operation, resource, scale, irreversible, detail)
@@ -482,7 +482,7 @@ def _call_arguments(signature: inspect.Signature, args: tuple, kwargs: dict) -> 
 def tool(spec: ActionSpec, name: str | None = None) -> Callable[[F], F]:
     """Guard a tool function: check and record each call before the body runs.
 
-        @warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"),
+        @segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"),
                                  irreversible=True))
         def delete_records(table: str, ids: list[int]) -> int: ...
 
@@ -491,7 +491,7 @@ def tool(spec: ActionSpec, name: str | None = None) -> Callable[[F], F]:
     """
 
     def decorator(fn: F) -> F:
-        _reject_generators(fn, "@warrant.tool")
+        _reject_generators(fn, "@segurai.tool")
         tool_name = name or fn.__name__
         signature = inspect.signature(fn)
 

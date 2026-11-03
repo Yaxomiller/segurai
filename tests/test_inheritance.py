@@ -6,8 +6,8 @@ end up with no targets at all, so every action it took was flagged.
 
 import pytest
 
-import warrant
-from warrant import Scope
+import segurai
+from segurai import Scope
 
 PARENT = Scope.of(
     operations=["read", "delete"],
@@ -74,12 +74,12 @@ def test_negative_max_scale_is_rejected():
 
 
 def test_agent_that_only_narrows_operations_keeps_parent_targets():
-    warrant.configure(store=":memory:", authority=warrant.Authority())
+    segurai.configure(store=":memory:", authority=segurai.Authority())
 
-    @warrant.agent("reader", scope=Scope.of(operations=["read"]))
+    @segurai.agent("reader", scope=Scope.of(operations=["read"]))
     def reader():
-        return warrant.act("read", "crm.opportunities")
+        return segurai.act("read", "crm.opportunities")
 
-    with warrant.session(principal="p", request="r", scope=PARENT):
+    with segurai.session(principal="p", request="r", scope=PARENT):
         rec = reader()
         assert rec.allowed, rec.violation

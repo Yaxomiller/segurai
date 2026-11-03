@@ -7,9 +7,9 @@ from datetime import timedelta
 
 import pytest
 
-from warrant import Authority, Scope, Store
-from warrant.models import ActionRecord, utcnow
-from warrant.report import Grant, build_report, load_grants
+from segurai import Authority, Scope, Store
+from segurai.models import ActionRecord, utcnow
+from segurai.report import Grant, build_report, load_grants
 
 NOW = utcnow()
 GRANTED = Scope.of(operations=["read", "update", "archive", "delete", "export"],
@@ -182,6 +182,6 @@ def test_identity_names_are_escaped_in_html():
 @pytest.mark.parametrize("value, expected", [(0, 1), (1, 1), (1.2, 2), (24, 50), (30, 50), (60, 100),
                                              (120, 200), (499, 500), (501, 1000)])
 def test_proposed_limits_round_up_to_readable_numbers(value, expected):
-    from warrant.report import _nice_ceiling
+    from segurai.report import _nice_ceiling
 
     assert _nice_ceiling(value) == expected

@@ -1,9 +1,9 @@
-"""What warrant's OpenTelemetry output looks like.
+"""What Segurai's OpenTelemetry output looks like.
 
 Runs the Sarah scenario with span export switched on, then prints the spans
 as an indented tree with their most useful attributes. In a real deployment
 the same spans go to your tracing backend (Jaeger, Honeycomb, Datadog,
-Grafana Tempo...) through a normal OTLP exporter - nothing warrant-specific
+Grafana Tempo...) through a normal OTLP exporter - nothing Segurai-specific
 is needed on that side.
 
 Run:  python examples/otel_demo.py
@@ -13,9 +13,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import warrant
-from warrant import ActionSpec, Scope, count
-from warrant.instrument import otel
+import segurai
+from segurai import ActionSpec, Scope, count
+from segurai.instrument import otel
 
 # Collect spans in memory so this script can print them. A real app would add
 # an OTLP exporter to its TracerProvider instead.
@@ -25,25 +25,25 @@ provider.add_span_processor(SimpleSpanProcessor(exporter))
 otel.enable(provider)
 
 
-@warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
+@segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
 def delete_records(table: str, ids: list[int]) -> int:
     return len(ids)
 
 
-@warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+@segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
 def crm_agent() -> None:
-    warrant.act("read", "crm.opportunities", scale=412)
+    segurai.act("read", "crm.opportunities", scale=412)
     delete_records("opportunities", list(range(400)))
 
 
-@warrant.agent("assistant")
+@segurai.agent("assistant")
 def assistant() -> None:
     crm_agent()
 
 
 GRANTED = Scope.of(operations=["read", "update", "delete"], targets=["crm.*"], max_scale=50)
 
-with warrant.session(principal="sarah@company.com",
+with segurai.session(principal="sarah@company.com",
                      request="clean up our old sales records", scope=GRANTED):
     assistant()
 

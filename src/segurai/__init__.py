@@ -3,10 +3,10 @@
 Records what a human asked for, records what the agents actually did, and links
 the two so the question "who authorized this?" has an answer.
 
-    import warrant
-    from warrant import Scope
+    import segurai
+    from segurai import Scope
 
-    warrant.configure(store="warrant.db")
+    segurai.configure(store="segurai.db")
 
     scope = Scope.of(
         operations=["read", "update", "delete"],
@@ -14,13 +14,13 @@ the two so the question "who authorized this?" has an answer.
         max_scale=50,
     )
 
-    with warrant.session(
+    with segurai.session(
         principal="sarah@company.com",
         request="clean up our old sales records",
         scope=scope,
     ) as s:
         run_assistant()
-        print(warrant.render(s.session_id))
+        print(segurai.render(s.session_id))
 
 Map of the package:
 
@@ -32,7 +32,7 @@ Map of the package:
     scenarios.py     the Tier 1 scenario suite (milestone M2)
     collector/       SQLite storage and rebuilding/rendering the chain
     instrument/      optional integrations: OpenTelemetry, LangGraph, MCP
-    cli.py           the `warrant` command
+    cli.py           the `segurai` command
 """
 
 from ._version import __version__

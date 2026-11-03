@@ -13,7 +13,7 @@ It calls Claude once per case, which costs money, so it asks for `--yes`:
 
 ```bash
 export ANTHROPIC_API_KEY=...
-warrant eval-intent --cases evals/intent/cases.jsonl --catalog evals/intent/catalog.json --split test --out intent-report.json --review-sheet intent-review.csv --yes
+segurai eval-intent --cases evals/intent/cases.jsonl --catalog evals/intent/catalog.json --split test --out intent-report.json --review-sheet intent-review.csv --yes
 ```
 
 The command prints a Markdown summary, and exits with code 0 only if the milestone target is met.

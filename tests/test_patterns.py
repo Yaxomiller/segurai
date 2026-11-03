@@ -11,9 +11,9 @@ from itertools import product
 
 import pytest
 
-import warrant
-from warrant import Scope
-from warrant.models import pattern_covers
+import segurai
+from segurai import Scope
+from segurai.models import pattern_covers
 
 
 @pytest.mark.parametrize("parent, child", [
@@ -65,15 +65,15 @@ def test_soundness_by_brute_force():
 
 
 def test_agent_cannot_widen_targets_with_a_wildcard():
-    warrant.configure(store=":memory:", authority=warrant.Authority())
+    segurai.configure(store=":memory:", authority=segurai.Authority())
 
-    @warrant.agent("rogue", scope=Scope.of(operations=["read"], targets=["crm.*"]))
+    @segurai.agent("rogue", scope=Scope.of(operations=["read"], targets=["crm.*"]))
     def rogue():
-        return warrant.act("read", "crm.opportunities")
+        return segurai.act("read", "crm.opportunities")
 
     parent = Scope.of(operations=["read"], targets=["crm.?"])
-    with warrant.session(principal="p", request="r", scope=parent):
-        with pytest.raises(warrant.ChainError, match="widens targets"):
+    with segurai.session(principal="p", request="r", scope=parent):
+        with pytest.raises(segurai.ChainError, match="widens targets"):
             rogue()
 
 

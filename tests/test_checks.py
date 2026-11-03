@@ -2,8 +2,8 @@
 
 import pytest
 
-import warrant
-from warrant import ActionSpec, Check, Scope, arg, count
+import segurai
+from segurai import ActionSpec, Check, Scope, arg, count
 
 STALE = Check(field="days_since_activity", op=">=", value=180,
               condition="only records with no recent activity", targets=("crm.opportunities",))
@@ -126,19 +126,19 @@ def test_clamping_to_a_ceiling_keeps_its_checks_and_total():
 # ---- the runtime -----------------------------------------------------------
 
 def _session(scope):
-    return warrant.session(principal="p", request="r", scope=scope)
+    return segurai.session(principal="p", request="r", scope=scope)
 
 
 def test_the_total_accumulates_across_agents_in_a_session():
     scope = Scope.of(operations=["archive"], targets=["crm.*"], max_scale=50, max_total=50)
 
-    @warrant.agent("first")
+    @segurai.agent("first")
     def first():
-        return warrant.act("archive", "crm.opportunities", scale=30)
+        return segurai.act("archive", "crm.opportunities", scale=30)
 
-    @warrant.agent("second")
+    @segurai.agent("second")
     def second():
-        return warrant.act("archive", "crm.leads", scale=30)
+        return segurai.act("archive", "crm.leads", scale=30)
 
     with _session(scope):
         assert first().allowed
@@ -150,21 +150,21 @@ def test_the_total_accumulates_across_agents_in_a_session():
 def test_reads_do_not_count_toward_the_total():
     scope = Scope.of(operations=["read", "archive"], targets=["crm.*"], max_total=10)
     with _session(scope):
-        warrant.act("read", "crm.opportunities", scale=5000)
-        assert warrant.act("archive", "crm.opportunities", scale=10).allowed
+        segurai.act("read", "crm.opportunities", scale=5000)
+        assert segurai.act("archive", "crm.opportunities", scale=10).allowed
 
 
 def test_blocked_actions_do_not_count_toward_the_total():
-    warrant.configure(mode=warrant.Mode.ENFORCE)
+    segurai.configure(mode=segurai.Mode.ENFORCE)
     scope = Scope.of(operations=["archive"], targets=["crm.*"], max_scale=100, max_total=50)
     with _session(scope):
-        with pytest.raises(warrant.ViolationError):
-            warrant.act("archive", "crm.opportunities", scale=60)
-        assert warrant.act("archive", "crm.opportunities", scale=40).allowed
+        with pytest.raises(segurai.ViolationError):
+            segurai.act("archive", "crm.opportunities", scale=60)
+        assert segurai.act("archive", "crm.opportunities", scale=40).allowed
 
 
 def test_action_spec_evidence_reaches_the_conditions():
-    @warrant.tool(ActionSpec("archive", "crm.{table}", scale=count("ids"),
+    @segurai.tool(ActionSpec("archive", "crm.{table}", scale=count("ids"),
                              evidence={"account_status": arg("statuses")}))
     def archive_records(table, ids, statuses):
         return len(ids)
@@ -180,10 +180,10 @@ def test_action_spec_evidence_reaches_the_conditions():
 def test_findings_are_stored_and_rendered_including_unverifiable_ones():
     scope = Scope.of(operations=["archive"], targets=["crm.*"], checks=[STALE, NOT_ACTIVE])
     with _session(scope) as s:
-        warrant.act("archive", "crm.opportunities", scale=2, account_status=["churned", "active"])
+        segurai.act("archive", "crm.opportunities", scale=2, account_status=["churned", "active"])
         (stored,) = s.actions()
     assert {(f.check, f.status) for f in stored.findings} == {("condition", "unverifiable"),
                                                              ("condition", "fail")}
-    out = warrant.render(s.session_id, charset="ascii")
+    out = segurai.render(s.session_id, charset="ascii")
     assert "-> condition not met" in out
     assert "?  cannot verify" in out

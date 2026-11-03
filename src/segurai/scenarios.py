@@ -5,7 +5,7 @@ chain of agents, and the actions they take. Running one uses the real
 runtime - sessions, delegation, act() - so what is measured is exactly what
 production code would do.
 
-    warrant eval-tier1 --scenarios evals/tier1/scenarios.json
+    segurai eval-tier1 --scenarios evals/tier1/scenarios.json
 
 Milestone M2 is met when, across the suite:
   * at least 90% of violating scenarios are caught FOR THE RIGHT REASON

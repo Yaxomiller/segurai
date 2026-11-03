@@ -1,6 +1,6 @@
 """A read-only web view: what was asked, beside what happened.
 
-    warrant ui --db warrant.db          then open http://127.0.0.1:8700/
+    segurai ui --db segurai.db          then open http://127.0.0.1:8700/
 
 Two pages:
 
@@ -89,7 +89,7 @@ def _page(title: str, body: str) -> str:
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{_e(title)}</title><style>{_STYLE}</style></head><body>"
-        "<header><a href='/'><strong>warrant</strong></a> "
+        "<header><a href='/'><strong>Segurai</strong></a> "
         "<span class='muted'>&middot; who authorized what your agents did</span></header>"
         f"<main>{body}</main></body></html>"
     )
@@ -137,7 +137,7 @@ def index_page(store: Store, limit: int = 50) -> str:
                  f"<tbody>{''.join(rows)}</tbody></table></div>")
     else:
         table = "<p class='muted'>No sessions recorded yet.</p>"
-    return _page("warrant - sessions", f"<h1>Sessions</h1><div class='card'>{table}</div>")
+    return _page("Segurai - sessions", f"<h1>Sessions</h1><div class='card'>{table}</div>")
 
 
 # ---- one session ------------------------------------------------------------
@@ -176,7 +176,7 @@ def _contract_html(record: dict[str, Any]) -> str:
 
 
 def _verification_html(store: Store, warrants: list[Warrant], verifier: Authority | None) -> str:
-    """Re-check every chain in the session, the same way `warrant verify` does."""
+    """Re-check every chain in the session, the same way `segurai verify` does."""
     parents = {w.parent_id for w in warrants if w.parent_id}
     leaves = [w for w in warrants if w.warrant_id not in parents]
     problems = []

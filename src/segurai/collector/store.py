@@ -115,7 +115,7 @@ _ADDED_COLUMNS = [
     ("actions", "findings_json", "TEXT"),
 ]
 
-_WARRANT_COLUMNS = ("warrant_id", "session_id", "root_principal", "holder", "scope_json",
+_SEGURAI_COLUMNS = ("warrant_id", "session_id", "root_principal", "holder", "scope_json",
                     "issued_at", "expires_at", "parent_id", "depth", "signature", "key_id")
 _ACTION_COLUMNS = ("action_id", "session_id", "warrant_id", "actor", "operation", "resource",
                    "scale", "irreversible", "at", "allowed", "violation", "detail_json",
@@ -147,7 +147,7 @@ class SessionRow:
 class Store:
     """A SQLite-backed store. Pass ``":memory:"`` for tests."""
 
-    def __init__(self, path: str | Path = "warrant.db"):
+    def __init__(self, path: str | Path = "segurai.db"):
         self.path = str(path)
         # check_same_thread=False lets one store serve an agent whose steps run
         # on a thread pool (LangGraph does this for parallel branches). The
@@ -224,7 +224,7 @@ class Store:
 
     def put_warrant(self, w: Warrant) -> None:
         self._write(
-            _insert_sql("warrants", _WARRANT_COLUMNS),
+            _insert_sql("warrants", _SEGURAI_COLUMNS),
             (w.warrant_id, w.session_id, w.root_principal, w.holder,
              json.dumps(w.scope.to_dict()), w.issued_at.isoformat(),
              w.expires_at.isoformat(), w.parent_id, w.depth, w.signature, w.key_id),

@@ -5,9 +5,9 @@ import sqlite3
 
 import pytest
 
-import warrant
-from warrant import Authority, ChainError, Scope
-from warrant.cli import main as cli_main
+import segurai
+from segurai import Authority, ChainError, Scope
+from segurai.cli import main as cli_main
 
 GRANTED = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
 
@@ -48,21 +48,21 @@ def test_wrong_key_message_names_both_keys():
 
 
 def test_configure_with_a_file_store_keeps_the_key_beside_it(tmp_path):
-    warrant.configure(store=str(tmp_path / "w.db"))
+    segurai.configure(store=str(tmp_path / "w.db"))
     assert (tmp_path / "w.key").exists()
-    first = warrant._runtime.authority.key_id
-    warrant.configure(store=str(tmp_path / "w.db"))
-    assert warrant._runtime.authority.key_id == first
+    first = segurai._runtime.authority.key_id
+    segurai.configure(store=str(tmp_path / "w.db"))
+    assert segurai._runtime.authority.key_id == first
 
 
 def _run_session(db):
-    warrant.configure(store=str(db))
+    segurai.configure(store=str(db))
 
-    @warrant.agent("crm_agent", scope=Scope.of(operations=["read"]))
+    @segurai.agent("crm_agent", scope=Scope.of(operations=["read"]))
     def crm_agent():
-        warrant.act("read", "crm.opportunities")
+        segurai.act("read", "crm.opportunities")
 
-    with warrant.session(principal="sarah@company.com", request="r", scope=GRANTED) as s:
+    with segurai.session(principal="sarah@company.com", request="r", scope=GRANTED) as s:
         crm_agent()
     return s.session_id
 
@@ -118,7 +118,7 @@ def test_database_from_before_key_ids_still_opens(tmp_path):
     conn.commit()
     conn.close()
 
-    store = warrant.Store(db)
+    store = segurai.Store(db)
     a = Authority()
     w = a.issue_root(session_id="s", principal="p", scope=GRANTED)
     store.put_warrant(w)
@@ -127,4 +127,4 @@ def test_database_from_before_key_ids_still_opens(tmp_path):
 
 def test_import_warrant_rejects_garbage():
     with pytest.raises(ValueError, match="not a valid warrant token"):
-        warrant.import_warrant("not-a-token")
+        segurai.import_warrant("not-a-token")

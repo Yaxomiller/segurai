@@ -1,10 +1,12 @@
-# warrant
+# Segurai
 
 **Provenance and authority for AI agent chains.** Records what a human asked for, records what the agents actually did, and links the two — so "who authorized this?" has an answer.
 
 > A manager types *"clean up our old sales records."* An assistant passes the job to a CRM agent, which deletes 400 customer records. A month later an auditor asks who authorized it. Every log says: *the service account did it.*
 >
 > The trail from the action back to the human is broken. That is what this fixes.
+
+Install it and import it as `segurai`. The signed grant that each agent hop carries is called a **warrant** — a narrow, written-down, traceable permission, like a search warrant — and that word is used throughout the code and the docs.
 
 New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything fits together in plain language.
 
@@ -51,7 +53,7 @@ New here? [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything f
 
 - Per agent and per person, over any window: operations never used, targets never touched, wildcards that could shrink, size limits against the largest real change
 - A proposed tightened scope built only from observed use, with the evidence behind it
-- Grants from warrants or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
+- Grants from segurais or from an identity-provider export; Markdown, HTML, JSON, and a CSV of every unused permission
 
 **M5 — design-partner pilots: kit ready.**
 
@@ -75,10 +77,10 @@ pip install -e ".[dev]"          # everything, plus pytest
 ## Quick start
 
 ```python
-import warrant
-from warrant import Scope
+import segurai
+from segurai import Scope
 
-warrant.configure(store="warrant.db")      # signing key kept beside it as warrant.key
+segurai.configure(store="segurai.db")      # signing key kept beside it as segurai.key
 
 granted = Scope.of(
     operations=["read", "update", "delete"],
@@ -88,23 +90,23 @@ granted = Scope.of(
 )
 
 # An agent says only what it narrows; everything else is inherited.
-@warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+@segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
 def crm_agent():
-    warrant.act("read", "crm.opportunities", scale=412)
-    warrant.act("delete", "crm.opportunities", scale=400, irreversible=True)
+    segurai.act("read", "crm.opportunities", scale=412)
+    segurai.act("delete", "crm.opportunities", scale=400, irreversible=True)
 
-@warrant.agent("assistant")
+@segurai.agent("assistant")
 def assistant():
     crm_agent()
 
-with warrant.session(
+with segurai.session(
     principal="sarah@company.com",
     request="clean up our old sales records",
     scope=granted,
 ) as s:
     assistant()
 
-print(warrant.render(s.session_id))
+print(segurai.render(s.session_id))
 ```
 
 ```
@@ -124,16 +126,16 @@ Summary: 3 warrants, 2 actions, 1 violation(s)
   ! crm_agent: delete crm.opportunities (scale=400) - scale 400 exceeds limit 50; irreversible action not permitted by scope [went ahead]
 ```
 
-`[FAIL   ]` means the action was outside the warrant and went ahead (observe mode). With `warrant.configure(mode="enforce")` it is stopped before it happens and shows as `[BLOCKED]`.
+`[FAIL   ]` means the action was outside the warrant and went ahead (observe mode). With `segurai.configure(mode="enforce")` it is stopped before it happens and shows as `[BLOCKED]`.
 
 ## Guarding tools
 
 Describe a tool once with an `ActionSpec` — what operation it performs, on which resource, at what scale — and every call is checked *before* the tool body runs:
 
 ```python
-from warrant import ActionSpec, count
+from segurai import ActionSpec, count
 
-@warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
+@segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
 def delete_records(table: str, ids: list[int]) -> int:
     ...
 ```
@@ -143,7 +145,7 @@ def delete_records(table: str, ids: list[int]) -> int:
 A plain-English condition can't be checked by a program; a `Check` can. The agent reports evidence about the records it touches, and every item must satisfy the condition:
 
 ```python
-from warrant import Check
+from segurai import Check
 
 granted = Scope.of(
     operations=["read", "archive"], targets=["crm.*"], max_scale=50, max_total=50,
@@ -151,16 +153,16 @@ granted = Scope.of(
                   condition="only records with no recent activity")],
 )
 
-warrant.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])
+segurai.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])
 # -> condition not met: only records with no recent activity (days_since_activity = 12, required >= 180)
 ```
 
-`max_total` caps the records changed across the whole session, so 400 one-record deletions can't slip under a per-action limit of 50. An action that reports no evidence for a check is marked unverifiable (`?` in the tree) rather than treated as a violation. Run the 20-scenario suite with `warrant eval-tier1`.
+`max_total` caps the records changed across the whole session, so 400 one-record deletions can't slip under a per-action limit of 50. An action that reports no evidence for a check is marked unverifiable (`?` in the tree) rather than treated as a violation. Run the 20-scenario suite with `segurai eval-tier1`.
 
 ## LangGraph
 
 ```python
-from warrant.instrument.langgraph import ToolGuard, agent_node
+from segurai.instrument.langgraph import ToolGuard, agent_node
 
 guard = ToolGuard({
     "delete_records": ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True),
@@ -175,7 +177,7 @@ app = StateGraph(MessagesState)
 app.add_node("crm_agent", agent_node("crm_agent", crm.compile(),
                                      scope=Scope.of(targets=["crm.opportunities"])))
 
-with warrant.session(principal="sarah@company.com", request=request, scope=granted):
+with segurai.session(principal="sarah@company.com", request=request, scope=granted):
     app.invoke({"messages": [HumanMessage(request)]})
 ```
 
@@ -184,7 +186,7 @@ Works for plain, async and parallel nodes, and for compiled subgraphs. In enforc
 ## MCP
 
 ```python
-from warrant.instrument.mcp import WarrantedClient, bind_from_meta
+from segurai.instrument.mcp import WarrantedClient, bind_from_meta
 
 # Agent side: calls are checked before they are sent, and carry the warrant.
 crm = WarrantedClient(mcp_client, server="crm", rules={...})
@@ -194,7 +196,7 @@ await crm.call_tool("delete_records", {"table": "opportunities", "ids": ids})
 @server.tool()
 async def delete_records(table: str, ids: list[int], ctx: Context) -> str:
     with bind_from_meta(ctx, holder="crm_server"):
-        warrant.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
+        segurai.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
         ...
 ```
 
@@ -203,7 +205,7 @@ Tools without a rule are described from the server's own `readOnlyHint` / `destr
 ## OpenTelemetry
 
 ```python
-from warrant.instrument import otel
+from segurai.instrument import otel
 otel.enable()
 ```
 
@@ -214,24 +216,24 @@ Sessions, agent hops and tool calls become spans named per the OpenTelemetry Gen
 Instead of writing the scope by hand, let the intent compiler read the request. One Claude call produces a structured contract, which is checked against your catalog of real operations and resources and clamped to the person's actual permissions — so a request can never grant more than the person already has.
 
 ```python
-from warrant.intent import Catalog, IntentCompiler
+from segurai.intent import Catalog, IntentCompiler
 
-warrant.configure(store="warrant.db", intent=IntentCompiler(Catalog.load("catalog.json")))
+segurai.configure(store="segurai.db", intent=IntentCompiler(Catalog.load("catalog.json")))
 
-with warrant.session(principal="sarah@company.com",
+with segurai.session(principal="sarah@company.com",
                      request="clean up our old sales records",
                      ceiling=sarahs_permissions) as s:
     ...
 ```
 
-Needs `pip install -e ".[intent]"` and `ANTHROPIC_API_KEY`. Try one request with `warrant intent "clean up our old sales records" --catalog evals/intent/catalog.json`; measure the compiler on 50 labeled cases with `warrant eval-intent` (see [evals/intent/](evals/intent/README.md)).
+Needs `pip install -e ".[intent]"` and `ANTHROPIC_API_KEY`. Try one request with `segurai intent "clean up our old sales records" --catalog evals/intent/catalog.json`; measure the compiler on 50 labeled cases with `segurai eval-intent` (see [evals/intent/](evals/intent/README.md)).
 
 ## Collector
 
 Agents on many machines send spans to one place with the standard OpenTelemetry OTLP exporter:
 
 ```bash
-warrant collect --db central.db --key org.pub --port 4318
+segurai collect --db central.db --key org.pub --port 4318
 ```
 
 The collector rebuilds every chain and re-checks every signature with the organisation's public key, refusing anything forged.
@@ -243,9 +245,9 @@ The collector rebuilds every chain and re-checks every signature with the organi
 Which permissions did we give agents that they never used?
 
 ```bash
-warrant report --days 30                                   # Markdown to the terminal
-warrant report --days 30 --format csv --out unused.csv     # one row per unused permission
-warrant report --grants okta-export.json --format html --out report.html
+segurai report --days 30                                   # Markdown to the terminal
+segurai report --days 30 --format csv --out unused.csv     # one row per unused permission
+segurai report --grants okta-export.json --format html --out report.html
 ```
 
 For every agent, and for each person's sessions as a whole, it lists operations never used, targets never touched, wildcards that were only used for a few resources, and size limits against the largest change actually made. It then proposes a tightened scope built only from observed use (it never adds anything), with the evidence behind it. Pass `--grants` with standing permissions exported from an identity provider ([format](examples/grants.example.json)) to compare those too, including against observed chains from plain OpenTelemetry. Rarely-run work may need permissions a short window doesn't show, so every report says so and rates its confidence by how much activity it saw.
@@ -255,48 +257,48 @@ For every agent, and for each person's sessions as a whole, it lists operations 
 Tier 1 is exact but can only compare. For the actions it flags, the judge asks Claude one narrow question: given what this person asked for, is this action within intent, outside it, or does a person need to decide?
 
 ```bash
-warrant judge <session_id> --yes      # judge the session's flagged actions
+segurai judge <session_id> --yes      # judge the session's flagged actions
 ```
 
-Verdicts are stored beside Tier 1's findings and shown in `warrant show` and the web view; they never change Tier 1's record. Everything the judge reads from agents and tools is treated as untrusted data, so "this was pre-approved" written by an agent grants nothing. Measure it with `warrant eval-judge` on 50 labeled cases (see [evals/tier2/](evals/tier2/README.md)).
+Verdicts are stored beside Tier 1's findings and shown in `segurai show` and the web view; they never change Tier 1's record. Everything the judge reads from agents and tools is treated as untrusted data, so "this was pre-approved" written by an agent grants nothing. Measure it with `segurai eval-judge` on 50 labeled cases (see [evals/tier2/](evals/tier2/README.md)).
 
 ## Web view
 
 ```bash
-warrant ui --db warrant.db        # then open http://127.0.0.1:8700/
+segurai ui --db segurai.db        # then open http://127.0.0.1:8700/
 ```
 
-One page per session: the request and its contract beside the delegation chain, every action's findings inline, and the signatures re-checked each time the page loads. It is plain HTML with no scripts; everything from a request is escaped, and pages carry a strict Content-Security-Policy. With `WARRANT_COLLECTOR_TOKEN` set, the browser asks for the token as a password. The collector serves the same pages at `/`.
+One page per session: the request and its contract beside the delegation chain, every action's findings inline, and the signatures re-checked each time the page loads. It is plain HTML with no scripts; everything from a request is escaped, and pages carry a strict Content-Security-Policy. With `SEGURAI_COLLECTOR_TOKEN` set, the browser asks for the token as a password. The collector serves the same pages at `/`.
 
 ## Deploying a pilot
 
 ```bash
-export WARRANT_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export SEGURAI_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
-The container runs as an unprivileged user on a read-only filesystem, keeps everything in one volume, listens only on localhost (put your TLS proxy in front), and refuses traffic from other machines without a token. Settings come from `WARRANT_DB`, `WARRANT_KEY`, `WARRANT_HOST`, `WARRANT_PORT` and `WARRANT_COLLECTOR_TOKEN`. The [pilot runbook](docs/PILOT_RUNBOOK.md) covers the rest: keys, connecting agents, the weekly review and the final report.
+The container runs as an unprivileged user on a read-only filesystem, keeps everything in one volume, listens only on localhost (put your TLS proxy in front), and refuses traffic from other machines without a token. Settings come from `SEGURAI_DB`, `SEGURAI_KEY`, `SEGURAI_HOST`, `SEGURAI_PORT` and `SEGURAI_COLLECTOR_TOKEN`. The [pilot runbook](docs/PILOT_RUNBOOK.md) covers the rest: keys, connecting agents, the weekly review and the final report.
 
 ## CLI
 
 ```bash
-warrant sessions              # list recent sessions
-warrant show <session_id>     # render the delegation tree (--json, --ascii)
-warrant verify <session_id>   # re-check every signature, link and narrowing
-warrant creep <session_id>    # granted vs exercised scope
-warrant report --days 30      # scope-creep report across sessions
-warrant keygen                # create a signing key
-warrant collect               # receive spans from agents (OTLP/HTTP)
-warrant ui                    # browse sessions in a web page
-warrant backup --out copy.db  # consistent copy of the database, safe while running
-warrant intent "<request>"    # compile a request into a scope contract
-warrant eval-intent ...       # grade the intent compiler on labeled cases
-warrant eval-tier1            # run the Tier 1 scenario suite (no API calls)
-warrant judge <session_id>    # Tier 2: judge a session's flagged actions
-warrant eval-judge            # grade the judge on labeled cases
+segurai sessions              # list recent sessions
+segurai show <session_id>     # render the delegation tree (--json, --ascii)
+segurai verify <session_id>   # re-check every signature, link and narrowing
+segurai creep <session_id>    # granted vs exercised scope
+segurai report --days 30      # scope-creep report across sessions
+segurai keygen                # create a signing key
+segurai collect               # receive spans from agents (OTLP/HTTP)
+segurai ui                    # browse sessions in a web page
+segurai backup --out copy.db  # consistent copy of the database, safe while running
+segurai intent "<request>"    # compile a request into a scope contract
+segurai eval-intent ...       # grade the intent compiler on labeled cases
+segurai eval-tier1            # run the Tier 1 scenario suite (no API calls)
+segurai judge <session_id>    # Tier 2: judge a session's flagged actions
+segurai eval-judge            # grade the judge on labeled cases
 ```
 
-`--db` picks the database (default `warrant.db`); the key is found beside it.
+`--db` picks the database (default `segurai.db`); the key is found beside it.
 
 ## Design
 

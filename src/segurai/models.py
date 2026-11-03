@@ -278,7 +278,7 @@ class Check:
 
     The agent reports evidence with the action -
 
-        warrant.act("archive", "crm.opportunities", scale=3,
+        segurai.act("archive", "crm.opportunities", scale=3,
                     days_since_activity=[200, 12, 400])
 
     - and the check compares it. The rules:

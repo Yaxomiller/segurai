@@ -2,7 +2,7 @@
 
 import pytest
 
-import warrant
+import segurai
 
 
 @pytest.fixture(autouse=True)
@@ -12,8 +12,8 @@ def _isolated_runtime():
     The runtime is process-wide, so without this a test that switches to
     ENFORCE mode or adds a listener would silently change the tests after it.
     """
-    warrant.configure(store=":memory:", authority=warrant.Authority(), mode=warrant.Mode.OBSERVE)
-    warrant._runtime.listeners.clear()
-    warrant._runtime.intent = None
+    segurai.configure(store=":memory:", authority=segurai.Authority(), mode=segurai.Mode.OBSERVE)
+    segurai._runtime.listeners.clear()
+    segurai._runtime.intent = None
     yield
-    warrant._runtime.listeners.clear()
+    segurai._runtime.listeners.clear()

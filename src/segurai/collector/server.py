@@ -1,6 +1,6 @@
 """The collector: a small HTTP service that receives spans from many agents.
 
-    warrant collect --db central.db --key org.pub --port 4318
+    segurai collect --db central.db --key org.pub --port 4318
 
 Agents point a standard OpenTelemetry OTLP/HTTP exporter at it:
 
@@ -46,7 +46,7 @@ from .web import CSP, index_page, session_page
 
 __all__ = ["CollectorServer", "DEFAULT_MAX_BODY"]
 
-_log = logging.getLogger("warrant.collector")
+_log = logging.getLogger("segurai.collector")
 
 #: Largest accepted request body, in bytes (after decompression).
 DEFAULT_MAX_BODY = 16 * 1024 * 1024
@@ -87,10 +87,19 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # After an error, finish with the connection rather than holding it
+        # open. The request may have been refused before its body was read,
+        # so what is left in the socket belongs to a message nobody handled;
+        # reusing the connection then desynchronises client and server, which
+        # showed up as the client's connection being aborted at random.
+        if status >= 400:
+            self.close_connection = True
+            self.send_header("Connection", "close")
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
     def _authorized(self) -> bool:
         """Accept the token as "Bearer <token>" (exporters) or as a Basic password (browsers).
@@ -164,7 +173,7 @@ class _Handler(BaseHTTPRequestHandler):
         # The web view shows who asked for what, so it sits behind the token too.
         if not self._authorized():
             self._send(401, b"unauthorized",
-                       extra_headers={"WWW-Authenticate": 'Basic realm="warrant", charset="UTF-8"'})
+                       extra_headers={"WWW-Authenticate": 'Basic realm="segurai", charset="UTF-8"'})
             return
         if path == "/":
             self._send_page(200, index_page(self.server.store))

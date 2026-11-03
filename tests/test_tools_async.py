@@ -1,4 +1,4 @@
-"""ActionSpec, @warrant.tool, async agents, delegate() and listener safety."""
+"""ActionSpec, @segurai.tool, async agents, delegate() and listener safety."""
 
 import asyncio
 from contextlib import contextmanager
@@ -6,14 +6,14 @@ from dataclasses import replace
 
 import pytest
 
-import warrant
-from warrant import ActionSpec, Scope, arg, count
+import segurai
+from segurai import ActionSpec, Scope, arg, count
 
 GRANTED = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
 
 
 def _session():
-    return warrant.session(principal="sarah@company.com", request="clean up", scope=GRANTED)
+    return segurai.session(principal="sarah@company.com", request="clean up", scope=GRANTED)
 
 
 # ---- ActionSpec ---------------------------------------------------------
@@ -38,16 +38,16 @@ def test_arg_rule_with_default():
     (ActionSpec("", "crm.x"), {}, "operation"),
 ])
 def test_spec_errors_are_explained(spec, arguments, message):
-    with pytest.raises(warrant.ActionSpecError, match=message):
+    with pytest.raises(segurai.ActionSpecError, match=message):
         spec.resolve(arguments)
 
 
-# ---- @warrant.tool ------------------------------------------------------
+# ---- @segurai.tool ------------------------------------------------------
 
 calls: list = []
 
 
-@warrant.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
+@segurai.tool(ActionSpec("delete", "crm.{table}", scale=count("ids"), irreversible=True))
 def delete_records(table: str, ids: list, dry_run: bool = False):
     calls.append((table, len(ids)))
     return len(ids)
@@ -66,16 +66,16 @@ def test_tool_records_the_call_and_still_runs_in_observe_mode():
 
 def test_tool_body_never_runs_when_blocked_in_enforce_mode():
     calls.clear()
-    warrant.configure(mode=warrant.Mode.ENFORCE)
+    segurai.configure(mode=segurai.Mode.ENFORCE)
     with _session() as s:
-        with pytest.raises(warrant.ViolationError):
+        with pytest.raises(segurai.ViolationError):
             delete_records("opportunities", list(range(400)))
         assert len(s.violations()) == 1
     assert calls == []
 
 
 def test_a_call_that_cannot_be_described_is_a_violation():
-    @warrant.tool(ActionSpec("delete", "crm.{table}"))
+    @segurai.tool(ActionSpec("delete", "crm.{table}"))
     def purge(**kwargs):
         return "done"
 
@@ -87,7 +87,7 @@ def test_a_call_that_cannot_be_described_is_a_violation():
 
 
 def test_async_tool():
-    @warrant.tool(ActionSpec("read", "crm.{table}"))
+    @segurai.tool(ActionSpec("read", "crm.{table}"))
     async def fetch(table):
         return table
 
@@ -104,10 +104,10 @@ def test_async_tool():
 
 def test_async_agent_actions_are_credited_to_the_agent():
     """Regression: the hop used to end before the coroutine ever ran."""
-    @warrant.agent("async_agent", scope=Scope.of(operations=["read"]))
+    @segurai.agent("async_agent", scope=Scope.of(operations=["read"]))
     async def async_agent():
         await asyncio.sleep(0)
-        return warrant.act("read", "crm.opportunities")
+        return segurai.act("read", "crm.opportunities")
 
     async def main():
         with _session() as s:
@@ -119,15 +119,15 @@ def test_async_agent_actions_are_credited_to_the_agent():
 
 
 def test_concurrent_async_agents_keep_their_own_warrants():
-    @warrant.agent("a")
+    @segurai.agent("a")
     async def a():
         await asyncio.sleep(0.01)
-        return warrant.act("read", "crm.a")
+        return segurai.act("read", "crm.a")
 
-    @warrant.agent("b")
+    @segurai.agent("b")
     async def b():
         await asyncio.sleep(0)
-        return warrant.act("read", "crm.b")
+        return segurai.act("read", "crm.b")
 
     async def main():
         with _session():
@@ -139,7 +139,7 @@ def test_concurrent_async_agents_keep_their_own_warrants():
 
 def test_generator_agents_are_refused_clearly():
     with pytest.raises(TypeError, match="generator"):
-        @warrant.agent("streamer")
+        @segurai.agent("streamer")
         def streamer():
             yield 1
 
@@ -148,29 +148,29 @@ def test_generator_agents_are_refused_clearly():
 
 def test_delegate_with_an_imported_parent_continues_the_chain():
     with _session():
-        token = warrant.export_warrant()
+        token = segurai.export_warrant()
     # e.g. a worker process that received the token with a queue message
-    parent = warrant.import_warrant(token)
-    with warrant.delegate("worker", parent=parent):
-        rec = warrant.act("read", "crm.leads")
+    parent = segurai.import_warrant(token)
+    with segurai.delegate("worker", parent=parent):
+        rec = segurai.act("read", "crm.leads")
     assert rec.actor == "worker"
-    chain = warrant._runtime.store.chain_to(rec.warrant_id)
+    chain = segurai._runtime.store.chain_to(rec.warrant_id)
     assert [w.holder for w in chain] == ["entrypoint", "worker"]
 
 
 def test_delegate_refuses_a_tampered_parent():
     with _session():
-        token = warrant.export_warrant()
-    forged = replace(warrant.import_warrant(token),
+        token = segurai.export_warrant()
+    forged = replace(segurai.import_warrant(token),
                      scope=Scope.of(operations=["delete"], targets=["*"]))
-    with pytest.raises(warrant.ChainError, match="invalid signature"):
-        with warrant.delegate("worker", parent=forged):
+    with pytest.raises(segurai.ChainError, match="invalid signature"):
+        with segurai.delegate("worker", parent=forged):
             pass
 
 
 # ---- listeners ----------------------------------------------------------
 
-class Recorder(warrant.Listener):
+class Recorder(segurai.Listener):
     def __init__(self):
         self.events = []
 
@@ -186,18 +186,18 @@ class Recorder(warrant.Listener):
 
 def test_listener_sees_hops_and_actions_in_order():
     recorder = Recorder()
-    warrant.add_listener(recorder)
+    segurai.add_listener(recorder)
 
-    @warrant.agent("crm_agent")
+    @segurai.agent("crm_agent")
     def crm_agent():
-        warrant.act("read", "crm.x")
+        segurai.act("read", "crm.x")
 
     with _session():
         crm_agent()
     assert recorder.events == [("enter", "crm_agent"), ("action", "read"), ("exit", "crm_agent")]
 
 
-class Broken(warrant.Listener):
+class Broken(segurai.Listener):
     def agent_scope(self, w):
         raise RuntimeError("listener bug")
 
@@ -206,11 +206,11 @@ class Broken(warrant.Listener):
 
 
 def test_a_broken_listener_never_breaks_the_agent(caplog):
-    warrant.add_listener(Broken())
+    segurai.add_listener(Broken())
 
-    @warrant.agent("crm_agent")
+    @segurai.agent("crm_agent")
     def crm_agent():
-        return warrant.act("read", "crm.x")
+        return segurai.act("read", "crm.x")
 
     with _session():
         assert crm_agent().allowed
@@ -218,9 +218,9 @@ def test_a_broken_listener_never_breaks_the_agent(caplog):
 
 
 def test_errors_from_the_agent_itself_still_propagate():
-    warrant.add_listener(Recorder())
+    segurai.add_listener(Recorder())
 
-    @warrant.agent("crm_agent")
+    @segurai.agent("crm_agent")
     def crm_agent():
         raise KeyError("boom")
 

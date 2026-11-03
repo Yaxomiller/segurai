@@ -27,7 +27,7 @@ Grants come from two places:
   2. An optional grants file: an agent's standing permissions exported from
      an identity provider or an MCP server's token configuration (see
      load_grants). Actions in observed chains - built from plain
-     OpenTelemetry spans, with no warrant code at all - count as use here,
+     OpenTelemetry spans, with no Segurai code at all - count as use here,
      which is how a team can get this report before adopting warrants.
 
 The caution printed on every report: a permission unused in the window may
@@ -501,7 +501,7 @@ class ScopeCreepReport:
             "<th>Size: granted / used / proposed</th><th>Confidence</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div>{''.join(details)}"
         )
-        return _page("warrant - scope-creep report", body)
+        return _page("Segurai - scope-creep report", body)
 
 
 def _counts(counter: dict[str, int]) -> str:

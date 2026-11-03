@@ -9,9 +9,9 @@ from langchain_core.tools import tool as lc_tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
-import warrant
-from warrant import ActionSpec, Scope, count
-from warrant.instrument.langgraph import ToolGuard, agent_node
+import segurai
+from segurai import ActionSpec, Scope, count
+from segurai.instrument.langgraph import ToolGuard, agent_node
 
 GRANTED = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
 
@@ -21,21 +21,21 @@ class State(TypedDict):
 
 
 def _session():
-    return warrant.session(principal="sarah@company.com",
+    return segurai.session(principal="sarah@company.com",
                            request="clean up our old sales records", scope=GRANTED)
 
 
 def test_nodes_become_agent_hops_including_parallel_branches():
     def planner(state):
-        warrant.act("read", "crm.accounts")
+        segurai.act("read", "crm.accounts")
         return {"log": ["planner"]}
 
     def leads(state):
-        warrant.act("read", "crm.leads")
+        segurai.act("read", "crm.leads")
         return {"log": ["leads"]}
 
     def opps(state):
-        warrant.act("read", "crm.opportunities")
+        segurai.act("read", "crm.opportunities")
         return {"log": ["opps"]}
 
     b = StateGraph(State)
@@ -64,7 +64,7 @@ def test_nodes_become_agent_hops_including_parallel_branches():
 
 def test_a_compiled_subgraph_can_be_an_agent():
     def delete_step(state):
-        warrant.act("delete", "crm.opportunities", scale=400, irreversible=True)
+        segurai.act("delete", "crm.opportunities", scale=400, irreversible=True)
         return {"log": ["deleted"]}
 
     sub = StateGraph(State)
@@ -90,7 +90,7 @@ def test_a_compiled_subgraph_can_be_an_agent():
 def test_async_graph_nodes():
     async def reader(state):
         await asyncio.sleep(0)
-        warrant.act("read", "crm.leads")
+        segurai.act("read", "crm.leads")
         return {"log": ["read"]}
 
     b = StateGraph(State)
@@ -155,7 +155,7 @@ def test_toolguard_records_tool_calls_in_observe_mode():
 
 def test_toolguard_blocks_before_the_tool_runs_in_enforce_mode():
     deleted.clear()
-    warrant.configure(mode=warrant.Mode.ENFORCE)
+    segurai.configure(mode=segurai.Mode.ENFORCE)
     with _session():
         out = _tool_graph(ToolGuard(RULES)).invoke(
             _model_asks_for("delete_records", {"table": "opportunities", "ids": list(range(400))}))

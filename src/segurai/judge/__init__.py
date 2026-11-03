@@ -5,14 +5,14 @@
 
 Typical use - review a finished session:
 
-    from warrant.judge import Judge
+    from segurai.judge import Judge
 
     for verdict in Judge().review_session(store, session_id):
         print(verdict.verdict, verdict.reasoning)
 
-or from the command line: ``warrant judge <session_id>``.
+or from the command line: ``segurai judge <session_id>``.
 
-Needs the optional extra (pip install 'warrant-provenance[judge]') and an
+Needs the optional extra (pip install 'segurai[judge]') and an
 Anthropic API key in ANTHROPIC_API_KEY.
 """
 

@@ -6,18 +6,18 @@
 
 Typical use:
 
-    from warrant.intent import Catalog, IntentCompiler
+    from segurai.intent import Catalog, IntentCompiler
 
     compiler = IntentCompiler(Catalog.load("catalog.json"))
-    warrant.configure(store="warrant.db", intent=compiler)
+    segurai.configure(store="segurai.db", intent=compiler)
 
-    with warrant.session(principal="sarah@company.com",
+    with segurai.session(principal="sarah@company.com",
                          request="clean up our old sales records",
                          ceiling=sarahs_real_permissions):
         ...
 
 The language-model call needs the optional extra
-(pip install 'warrant-provenance[intent]') and an Anthropic API key in
+(pip install 'segurai[intent]') and an Anthropic API key in
 ANTHROPIC_API_KEY. Everything else here works without either.
 """
 

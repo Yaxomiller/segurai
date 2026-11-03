@@ -16,9 +16,9 @@ import asyncio
 from mcp import Client, types
 from mcp.server.mcpserver import Context, MCPServer
 
-import warrant
-from warrant import ActionSpec, Scope, count
-from warrant.instrument.mcp import WarrantedClient, bind_from_meta
+import segurai
+from segurai import ActionSpec, Scope, count
+from segurai.instrument.mcp import WarrantedClient, bind_from_meta
 
 # ---- the CRM's MCP server ------------------------------------------------
 
@@ -38,7 +38,7 @@ async def delete_records(table: str, ids: list[int], ctx: Context) -> str:
     # a child warrant held by this server. What the server records joins the
     # same session as the agent that called it.
     with bind_from_meta(ctx, holder="crm_server"):
-        warrant.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
+        segurai.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
         return f"deleted {len(ids)} rows from {table}"
 
 
@@ -53,7 +53,7 @@ GRANTED = Scope.of(
 
 
 async def main() -> None:
-    warrant.configure(store=":memory:")
+    segurai.configure(store=":memory:")
 
     async with Client(server) as raw:
         crm = WarrantedClient(raw, server="crm", rules={
@@ -61,24 +61,24 @@ async def main() -> None:
             # find_stale_opportunities has no rule: its readOnlyHint makes it a "read".
         })
 
-        @warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities", "mcp.crm.*"]))
+        @segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities", "mcp.crm.*"]))
         async def crm_agent() -> str:
             await crm.call_tool("find_stale_opportunities", {"days_inactive": 180})
             result = await crm.call_tool("delete_records",
                                          {"table": "opportunities", "ids": list(range(1000, 1400))})
             return result.content[0].text
 
-        @warrant.agent("assistant")
+        @segurai.agent("assistant")
         async def assistant() -> str:
             return await crm_agent()
 
         request = "clean up our old sales records"
-        with warrant.session(principal="sarah@company.com", request=request, scope=GRANTED) as s:
+        with segurai.session(principal="sarah@company.com", request=request, scope=GRANTED) as s:
             print("Server replied:", await assistant())
 
     print()
-    print(warrant.render(s.session_id))
-    problems = warrant.verify_session(s.session_id)
+    print(segurai.render(s.session_id))
+    problems = segurai.verify_session(s.session_id)
     print("\nChain verification:", "OK" if not problems else problems)
 
 

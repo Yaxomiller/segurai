@@ -9,6 +9,6 @@ dist/
 venv/
 .DS_Store
 
-# Signing keys created by warrant.configure()/warrant keygen
+# Signing keys created by segurai.configure()/segurai keygen
 *.key
 *.pub

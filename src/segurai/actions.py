@@ -25,7 +25,7 @@ field is either a fixed value or a rule computed from the call's arguments:
     )
 
 The same ActionSpec type is used everywhere a tool call is intercepted - the
-@warrant.tool decorator, the LangGraph ToolGuard and the MCP client - so a
+@segurai.tool decorator, the LangGraph ToolGuard and the MCP client - so a
 team describes each tool once and it is judged the same way everywhere.
 """
 

@@ -1,22 +1,22 @@
 """Command line interface.
 
-    warrant sessions                 list recent sessions
-    warrant show <session_id>        render the delegation tree
-    warrant verify <session_id>      check every chain in a session
-    warrant creep <session_id>       granted vs exercised scope
-    warrant report                   scope-creep report across sessions (M6)
-    warrant keygen                   create a signing key
-    warrant collect                  receive spans from agents over OTLP/HTTP
-    warrant ui                       browse sessions in a web page
-    warrant backup --out copy.db     copy the database safely while it is in use
-    warrant intent "<request>"       compile a request into a scope contract
-    warrant eval-intent              grade the intent compiler on labeled cases
-    warrant eval-tier1               run the Tier 1 scenario suite (no API calls)
-    warrant judge <session_id>       Tier 2: judge a session's flagged actions
-    warrant eval-judge               grade the Tier 2 judge on labeled cases
+    segurai sessions                 list recent sessions
+    segurai show <session_id>        render the delegation tree
+    segurai verify <session_id>      check every chain in a session
+    segurai creep <session_id>       granted vs exercised scope
+    segurai report                   scope-creep report across sessions (M6)
+    segurai keygen                   create a signing key
+    segurai collect                  receive spans from agents over OTLP/HTTP
+    segurai ui                       browse sessions in a web page
+    segurai backup --out copy.db     copy the database safely while it is in use
+    segurai intent "<request>"       compile a request into a scope contract
+    segurai eval-intent              grade the intent compiler on labeled cases
+    segurai eval-tier1               run the Tier 1 scenario suite (no API calls)
+    segurai judge <session_id>       Tier 2: judge a session's flagged actions
+    segurai eval-judge               grade the Tier 2 judge on labeled cases
 
-``--db`` selects the store, defaulting to ./warrant.db. The signing key is
-looked for beside it (warrant.db -> warrant.key / warrant.pub) unless
+``--db`` selects the store, defaulting to ./segurai.db. The signing key is
+looked for beside it (segurai.db -> segurai.key / segurai.pub) unless
 ``--key`` says otherwise.
 """
 
@@ -191,10 +191,10 @@ def _serve(args: argparse.Namespace, what: str) -> int:
 
     # Prefer the environment variable: a token on the command line is visible
     # to anyone who can list the machine's processes.
-    token = args.token or os.environ.get("WARRANT_COLLECTOR_TOKEN")
+    token = args.token or os.environ.get("SEGURAI_COLLECTOR_TOKEN")
     if args.host not in _LOOPBACK and not token and not args.insecure_no_token:
         print("Refusing to listen beyond this machine without a token: anyone who could reach the "
-              "port could read every session and send forged data. Set WARRANT_COLLECTOR_TOKEN, or "
+              "port could read every session and send forged data. Set SEGURAI_COLLECTOR_TOKEN, or "
               "pass --insecure-no-token if the network is protected some other way.")
         return 2
 
@@ -203,11 +203,11 @@ def _serve(args: argparse.Namespace, what: str) -> int:
     verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
     server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
     host, port = server.server_address[:2]
-    print(f"warrant {what}: http://{host}:{port}/  (spans to /v1/traces, database {args.db})")
+    print(f"segurai {what}: http://{host}:{port}/  (spans to /v1/traces, database {args.db})")
     if verifier is not None:
         print(f"  signatures checked with {verifier.key_id}; forged warrants are refused")
     else:
-        print("  WARNING: no key found - signatures are NOT checked (pass --key or set WARRANT_KEY)")
+        print("  WARNING: no key found - signatures are NOT checked (pass --key or set SEGURAI_KEY)")
     if token:
         print("  token required (web browsers: any user name, the token as the password)")
     elif args.host not in _LOOPBACK:
@@ -374,7 +374,7 @@ def _never_crash_on_unprintable_text() -> None:
 
     A Windows console on a legacy code page (cp1252), or output redirected to
     a file, cannot encode every character. Without this, a request typed in
-    another language would crash ``warrant show`` halfway through the report.
+    another language would crash ``segurai show`` halfway through the report.
     """
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -383,13 +383,13 @@ def _never_crash_on_unprintable_text() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _never_crash_on_unprintable_text()
-    p = argparse.ArgumentParser(prog="warrant", description=__doc__,
+    p = argparse.ArgumentParser(prog="segurai", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     # Defaults can come from the environment, which is how containers are configured.
-    p.add_argument("--db", default=os.environ.get("WARRANT_DB", "warrant.db"),
-                   help="store path (default: $WARRANT_DB, else warrant.db)")
-    p.add_argument("--key", default=os.environ.get("WARRANT_KEY"),
-                   help="signing key file (default: $WARRANT_KEY, else beside the database)")
+    p.add_argument("--db", default=os.environ.get("SEGURAI_DB", "segurai.db"),
+                   help="store path (default: $SEGURAI_DB, else segurai.db)")
+    p.add_argument("--key", default=os.environ.get("SEGURAI_KEY"),
+                   help="signing key file (default: $SEGURAI_KEY, else beside the database)")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("sessions", help="list recent sessions")
@@ -424,25 +424,25 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(func=cmd_keygen)
 
     s = sub.add_parser("collect", help="receive spans from agents over OTLP/HTTP")
-    s.add_argument("--host", default=os.environ.get("WARRANT_HOST", "127.0.0.1"),
-                   help="interface to listen on (default: $WARRANT_HOST, else 127.0.0.1)")
-    s.add_argument("--port", type=int, default=int(os.environ.get("WARRANT_PORT", "4318")),
-                   help="port (default: $WARRANT_PORT, else 4318)")
+    s.add_argument("--host", default=os.environ.get("SEGURAI_HOST", "127.0.0.1"),
+                   help="interface to listen on (default: $SEGURAI_HOST, else 127.0.0.1)")
+    s.add_argument("--port", type=int, default=int(os.environ.get("SEGURAI_PORT", "4318")),
+                   help="port (default: $SEGURAI_PORT, else 4318)")
     s.add_argument("--insecure-no-token", action="store_true",
                    help="allow listening beyond this machine without a token")
     s.add_argument("--token", default=None,
-                   help="require this bearer token (prefer the WARRANT_COLLECTOR_TOKEN variable)")
+                   help="require this bearer token (prefer the SEGURAI_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_collect)
 
     s = sub.add_parser("ui", help="browse sessions in a web page")
-    s.add_argument("--host", default=os.environ.get("WARRANT_HOST", "127.0.0.1"),
-                   help="interface to listen on (default: $WARRANT_HOST, else 127.0.0.1)")
-    s.add_argument("--port", type=int, default=int(os.environ.get("WARRANT_PORT", "8700")),
-                   help="port (default: $WARRANT_PORT, else 8700)")
+    s.add_argument("--host", default=os.environ.get("SEGURAI_HOST", "127.0.0.1"),
+                   help="interface to listen on (default: $SEGURAI_HOST, else 127.0.0.1)")
+    s.add_argument("--port", type=int, default=int(os.environ.get("SEGURAI_PORT", "8700")),
+                   help="port (default: $SEGURAI_PORT, else 8700)")
     s.add_argument("--insecure-no-token", action="store_true",
                    help="allow listening beyond this machine without a token")
     s.add_argument("--token", default=None,
-                   help="require this password (prefer the WARRANT_COLLECTOR_TOKEN variable)")
+                   help="require this password (prefer the SEGURAI_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_ui)
 
     s = sub.add_parser("backup", help="copy the database safely while it is in use")

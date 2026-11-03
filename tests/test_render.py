@@ -1,6 +1,6 @@
 """Output must never crash, whatever the terminal can display.
 
-Regression for 2026-09-15: on Windows, the demo and ``warrant show`` raised
+Regression for 2026-09-15: on Windows, the demo and ``segurai show`` raised
 UnicodeEncodeError when stdout used a legacy code page (cp1252), which is what
 happens when output is piped or redirected.
 """
@@ -12,44 +12,44 @@ from pathlib import Path
 
 import pytest
 
-import warrant
-from warrant import Scope
-from warrant.collector.chain import render_session
+import segurai
+from segurai import Scope
+from segurai.collector.chain import render_session
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_CONSOLE = dict(os.environ, PYTHONIOENCODING="cp1252")
 
 
 def _session(store=":memory:", request="clean up our old sales records"):
-    warrant.configure(store=store, authority=warrant.Authority())
+    segurai.configure(store=store, authority=segurai.Authority())
 
-    @warrant.agent("crm_agent")
+    @segurai.agent("crm_agent")
     def crm_agent():
-        warrant.act("delete", "crm.opportunities", scale=400)
+        segurai.act("delete", "crm.opportunities", scale=400)
 
     granted = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
-    with warrant.session(principal="sarah@company.com", request=request, scope=granted) as s:
+    with segurai.session(principal="sarah@company.com", request=request, scope=granted) as s:
         crm_agent()
     return s.session_id
 
 
 def test_ascii_charset_output_is_pure_ascii():
     sid = _session()
-    out = render_session(warrant._runtime.store, sid, charset="ascii")
+    out = render_session(segurai._runtime.store, sid, charset="ascii")
     out.encode("ascii")  # raises if a non-ASCII character slipped in
     assert "`- crm_agent" in out
 
 
 def test_unicode_charset_draws_box_lines():
     sid = _session()
-    out = render_session(warrant._runtime.store, sid, charset="unicode")
+    out = render_session(segurai._runtime.store, sid, charset="unicode")
     assert "└─ crm_agent" in out
 
 
 def test_unknown_charset_is_rejected():
     sid = _session()
     with pytest.raises(ValueError, match="charset"):
-        render_session(warrant._runtime.store, sid, charset="emoji")
+        render_session(segurai._runtime.store, sid, charset="emoji")
 
 
 def test_demo_runs_on_a_legacy_code_page():
@@ -64,7 +64,7 @@ def test_demo_runs_on_a_legacy_code_page():
 def test_cli_show_survives_unprintable_request_text(tmp_path):
     sid = _session(store=str(tmp_path / "w.db"), request="nettoyer les données 旧记录")
     result = subprocess.run(
-        [sys.executable, "-m", "warrant.cli", "--db", str(tmp_path / "w.db"), "show", sid],
+        [sys.executable, "-m", "segurai.cli", "--db", str(tmp_path / "w.db"), "show", sid],
         capture_output=True, env=LEGACY_CONSOLE, cwd=ROOT,
     )
     assert result.returncode == 0, result.stderr.decode("cp1252", "replace")

@@ -8,7 +8,7 @@ No LLM or API key is needed: the model step is scripted to make the same bad
 decision a real model might - delete all 400 stale records at once.
 
 The graph is ordinary LangGraph. Warrant adds three things:
-    warrant.session(...)  the human request the whole run hangs from
+    segurai.session(...)  the human request the whole run hangs from
     agent_node(...)       each sub-agent becomes a hop in the delegation chain
     ToolGuard(...)        every tool call is checked before the tool runs
 
@@ -24,9 +24,9 @@ from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
-import warrant
-from warrant import ActionSpec, Scope, count
-from warrant.instrument.langgraph import ToolGuard, agent_node
+import segurai
+from segurai import ActionSpec, Scope, count
+from segurai.instrument.langgraph import ToolGuard, agent_node
 
 # ---- tools: stand-ins for a real CRM API ---------------------------------
 
@@ -42,7 +42,7 @@ def delete_records(table: str, ids: list[int]) -> str:
     return f"deleted {len(ids)} rows from {table}"
 
 
-# ---- describe each tool once, so warrant knows what a call touches ----
+# ---- describe each tool once, so Segurai knows what a call touches ----
 
 guard = ToolGuard({
     "find_stale_opportunities": ActionSpec("read", "crm.opportunities"),
@@ -82,7 +82,7 @@ crm.add_edge("tools", "model")
 # ---- the supervisor graph --------------------------------------------------
 
 def assistant(state: MessagesState) -> dict:
-    warrant.act("read", "crm.accounts", note="checking which customers are active")
+    segurai.act("read", "crm.accounts", note="checking which customers are active")
     return {"messages": [AIMessage(content="Handing the cleanup to the CRM agent.")]}
 
 
@@ -105,21 +105,21 @@ GRANTED = Scope.of(
 )
 
 
-def run(mode: warrant.Mode) -> None:
-    warrant.configure(store=":memory:", mode=mode)
+def run(mode: segurai.Mode) -> None:
+    segurai.configure(store=":memory:", mode=mode)
     request = "clean up our old sales records"
-    with warrant.session(principal="sarah@company.com", request=request, scope=GRANTED) as s:
+    with segurai.session(principal="sarah@company.com", request=request, scope=GRANTED) as s:
         result = graph.invoke({"messages": [HumanMessage(request)]})
 
     print(f"=== {mode.value.upper()} mode " + "=" * 50)
     print(f"Final message: {result['messages'][-1].content}")
     print()
-    print(warrant.render(s.session_id))
-    problems = warrant.verify_session(s.session_id)
+    print(segurai.render(s.session_id))
+    problems = segurai.verify_session(s.session_id)
     print("\nChain verification:", "OK" if not problems else problems)
     print()
 
 
 if __name__ == "__main__":
-    run(warrant.Mode.OBSERVE)
-    run(warrant.Mode.ENFORCE)
+    run(segurai.Mode.OBSERVE)
+    run(segurai.Mode.ENFORCE)

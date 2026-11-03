@@ -8,10 +8,10 @@ import urllib.request
 
 import pytest
 
-import warrant
-from warrant import Check, Scope
-from warrant.collector.server import CollectorServer
-from warrant.collector.web import CSP, index_page, session_page
+import segurai
+from segurai import Check, Scope
+from segurai.collector.server import CollectorServer
+from segurai.collector.web import CSP, index_page, session_page
 
 GRANTED = Scope.of(
     operations=["read", "archive", "delete"], targets=["crm.*"], max_scale=50, max_total=50,
@@ -21,20 +21,20 @@ GRANTED = Scope.of(
 
 
 def _run(request="clean up our old sales records", contract=None):
-    @warrant.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+    @segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
     def crm_agent():
-        warrant.act("read", "crm.opportunities", scale=412)
-        warrant.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])
-        warrant.act("archive", "crm.opportunities", scale=2)  # reports no evidence
+        segurai.act("read", "crm.opportunities", scale=412)
+        segurai.act("archive", "crm.opportunities", scale=3, days_since_activity=[200, 12, 400])
+        segurai.act("archive", "crm.opportunities", scale=2)  # reports no evidence
 
-    with warrant.session(principal="sarah@company.com", request=request, scope=GRANTED,
+    with segurai.session(principal="sarah@company.com", request=request, scope=GRANTED,
                          contract=contract) as s:
         crm_agent()
     return s.session_id
 
 
 def _store():
-    return warrant._runtime.store
+    return segurai._runtime.store
 
 
 # ---- the pages ---------------------------------------------------------
@@ -49,7 +49,7 @@ def test_index_lists_sessions_and_their_verdicts():
 
 def test_session_page_shows_chain_findings_scope_and_verification():
     sid = _run()
-    page = session_page(_store(), sid, verifier=warrant._runtime.authority)
+    page = session_page(_store(), sid, verifier=segurai._runtime.authority)
     assert "crm_agent" in page and "FAIL" in page
     assert "condition not met: only records with no recent activity" in page
     assert "cannot verify" in page
@@ -96,7 +96,7 @@ def test_a_tampered_chain_fails_verification_on_the_page():
                           "irreversible_allowed": True, "constraints": []})
     store._conn.execute("UPDATE warrants SET scope_json = ? WHERE holder = 'crm_agent'", (widened,))
     store._conn.commit()
-    page = session_page(store, sid, verifier=warrant._runtime.authority)
+    page = session_page(store, sid, verifier=segurai._runtime.authority)
     assert "Verification FAILED" in page and "invalid signature" in page
 
 
@@ -133,7 +133,7 @@ def _get(url, headers=None):
 
 def test_pages_are_served_with_a_strict_content_security_policy(serve):
     sid = _run()
-    base = serve(verifier=warrant._runtime.authority)
+    base = serve(verifier=segurai._runtime.authority)
 
     status, headers, body = _get(base + "/")
     assert status == 200 and "text/html" in headers["Content-Type"]

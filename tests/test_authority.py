@@ -3,8 +3,8 @@ from datetime import timedelta
 
 import pytest
 
-from warrant import Authority, ChainError, Scope, verify_chain
-from warrant.models import utcnow
+from segurai import Authority, ChainError, Scope, verify_chain
+from segurai.models import utcnow
 
 
 @pytest.fixture

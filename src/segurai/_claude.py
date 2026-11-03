@@ -11,7 +11,7 @@ apart:
     or a cut-off answer gets a clear error instead of a confusing parse error
   * API errors become plain-language ModelCallErrors, most specific first
 
-Nothing here is warrant-specific; callers turn ModelCallError into their own
+Nothing here is Segurai-specific; callers turn ModelCallError into their own
 error types (IntentError, JudgeError).
 """
 
@@ -46,7 +46,7 @@ def anthropic_module(extra: str) -> Any:
     try:
         import anthropic
     except ImportError as exc:
-        raise ModelCallError(f"this needs the Anthropic SDK: pip install 'warrant-provenance[{extra}]'") from exc
+        raise ModelCallError(f"this needs the Anthropic SDK: pip install 'segurai[{extra}]'") from exc
     return anthropic
 
 

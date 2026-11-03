@@ -211,7 +211,7 @@ class ClaudeJudgeBackend:
 
     ``effort`` defaults to "low". The roadmap asks for a verdict in under two
     seconds, and a narrow yes/no-style judgement is the kind of work that
-    holds up well at low effort. The eval (warrant eval-judge) measures
+    holds up well at low effort. The eval (segurai eval-judge) measures
     agreement, so raise it if the numbers say so.
     """
 
@@ -290,7 +290,7 @@ class JudgeListener(Listener):
     """Judge flagged actions as they happen.
 
     The agent's call waits for the verdict, so use this only where that delay
-    is acceptable; otherwise run ``warrant judge`` after the session. The
+    is acceptable; otherwise run ``segurai judge`` after the session. The
     verdict is recorded but does not block anything - blocking is Tier 1's job.
     A judging failure is logged by the runtime and never breaks the agent.
     """

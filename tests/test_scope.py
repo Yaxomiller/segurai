@@ -1,4 +1,4 @@
-from warrant import Scope
+from segurai import Scope
 
 
 def test_permits_happy_path():

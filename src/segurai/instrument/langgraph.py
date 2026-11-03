@@ -33,7 +33,7 @@ no changes, and this module adds two conveniences.
    up as a violation. That is the right default: a tool nobody has described
    is a tool nobody can have authorized.
 
-Invoke the graph inside ``warrant.session(...)`` so there is a warrant to
+Invoke the graph inside ``segurai.session(...)`` so there is a warrant to
 delegate from.
 """
 
@@ -47,7 +47,7 @@ try:
     from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 except ImportError as exc:  # pragma: no cover - only without the optional extra
     raise ImportError(
-        "warrant.instrument.langgraph needs LangGraph: pip install 'warrant-provenance[langgraph]'"
+        "segurai.instrument.langgraph needs LangGraph: pip install 'segurai[langgraph]'"
     ) from exc
 
 from ..actions import ActionSpec

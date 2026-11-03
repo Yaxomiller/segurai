@@ -1,32 +1,32 @@
 import pytest
 
-import warrant
-from warrant import Scope, Store
-from warrant.collector.chain import build_tree
+import segurai
+from segurai import Scope, Store
+from segurai.collector.chain import build_tree
 
 GRANTED = Scope.of(operations=["read", "delete"], targets=["crm.*"], max_scale=50)
 
 
 @pytest.fixture(autouse=True)
 def fresh_runtime():
-    warrant.configure(store=":memory:", authority=warrant.Authority(),
-                      mode=warrant.Mode.OBSERVE)
+    segurai.configure(store=":memory:", authority=segurai.Authority(),
+                      mode=segurai.Mode.OBSERVE)
     yield
 
 
 def _run_demo():
-    @warrant.agent("crm_agent", scope=Scope.of(
+    @segurai.agent("crm_agent", scope=Scope.of(
         operations=["read", "delete"], targets=["crm.opportunities"], max_scale=50))
     def crm_agent():
-        warrant.act("read", "crm.opportunities", scale=412)
-        warrant.act("delete", "crm.opportunities", scale=400, irreversible=True)
+        segurai.act("read", "crm.opportunities", scale=412)
+        segurai.act("delete", "crm.opportunities", scale=400, irreversible=True)
 
-    @warrant.agent("assistant")
+    @segurai.agent("assistant")
     def assistant():
-        warrant.act("read", "crm.opportunities")
+        segurai.act("read", "crm.opportunities")
         crm_agent()
 
-    with warrant.session(principal="sarah@company.com",
+    with segurai.session(principal="sarah@company.com",
                          request="clean up our old sales records",
                          scope=GRANTED) as s:
         assistant()
@@ -35,7 +35,7 @@ def _run_demo():
 
 def test_store_reconstructs_chain_to_leaf():
     sid = _run_demo()
-    store = warrant._runtime.store
+    store = segurai._runtime.store
     warrants = store.warrants_for_session(sid)
     leaf = max(warrants, key=lambda w: w.depth)
     chain = store.chain_to(leaf.warrant_id)
@@ -51,7 +51,7 @@ def test_chain_to_missing_warrant_raises():
 
 def test_build_tree_groups_children():
     sid = _run_demo()
-    warrants = warrant._runtime.store.warrants_for_session(sid)
+    warrants = segurai._runtime.store.warrants_for_session(sid)
     roots, children = build_tree(warrants)
     assert len(roots) == 1
     assert children[roots[0].warrant_id][0].holder == "assistant"
@@ -59,7 +59,7 @@ def test_build_tree_groups_children():
 
 def test_render_contains_the_answer_to_who_authorized_this():
     sid = _run_demo()
-    out = warrant.render(sid)
+    out = segurai.render(sid)
     assert "sarah@company.com" in out
     assert "clean up our old sales records" in out
     assert "entrypoint" in out and "assistant" in out and "crm_agent" in out
@@ -70,7 +70,7 @@ def test_render_contains_the_answer_to_who_authorized_this():
 
 def test_summary_reports_violations_and_exercised_scope():
     sid = _run_demo()
-    summary = warrant.summary(sid)
+    summary = segurai.summary(sid)
     assert summary["principal"] == "sarah@company.com"
     assert summary["max_depth"] == 2
     assert summary["holders"] == ["assistant", "crm_agent", "entrypoint"]
@@ -82,19 +82,19 @@ def test_summary_reports_violations_and_exercised_scope():
 def test_exercised_scope_is_narrower_than_granted():
     """The seed of the scope-creep report: 'update' was granted, never used."""
     sid = _run_demo()
-    used = warrant._runtime.store.exercised_scope(sid)
+    used = segurai._runtime.store.exercised_scope(sid)
     assert "update" not in used["operations"]
 
 
 def test_verify_session_detects_a_forged_warrant():
     sid = _run_demo()
-    store = warrant._runtime.store
+    store = segurai._runtime.store
     # An attacker cannot use attenuate() - it verifies the parent first, and a
     # foreign key cannot verify our warrants. So forge the object directly and
     # splice it into the store, which is the realistic tampering path.
-    rogue_auth = warrant.Authority()
+    rogue_auth = segurai.Authority()
     leaf = max(store.warrants_for_session(sid), key=lambda w: w.depth)
-    forged = warrant.Warrant(
+    forged = segurai.Warrant(
         warrant_id="wrt_forged",
         session_id=leaf.session_id,
         root_principal=leaf.root_principal,
@@ -107,5 +107,5 @@ def test_verify_session_detects_a_forged_warrant():
     )
     store.put_warrant(rogue_auth._sign(forged))
 
-    problems = warrant.verify_session(sid)
+    problems = segurai.verify_session(sid)
     assert problems and "exfiltrator" in problems[0]

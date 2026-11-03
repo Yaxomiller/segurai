@@ -13,12 +13,12 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-from warrant import Authority, Scope, Store
-from warrant.collector.chain import render_session
-from warrant.collector.otlp import ingest
-from warrant.collector.server import CollectorServer
-from warrant.collector.web import session_page
-from warrant.instrument.otel import warrant_attributes
+from segurai import Authority, Scope, Store
+from segurai.collector.chain import render_session
+from segurai.collector.otlp import ingest
+from segurai.collector.server import CollectorServer
+from segurai.collector.web import session_page
+from segurai.instrument.otel import warrant_attributes
 
 TRACE = "5b8efff798038103d269b633813fc60c"
 ROOT, SUPERVISOR, CRM, CHAT, TOOL = ("1000000000000001", "2000000000000002", "3000000000000003",
@@ -113,7 +113,7 @@ def test_a_trace_with_real_warrants_is_never_also_built_as_observed():
     signer = Authority()
     root = signer.issue_root(session_id="ses_real", principal="p",
                              scope=Scope.of(operations=["read"], targets=["crm.*"]))
-    warrant_span = (ROOT, None, "invoke_workflow warrant.session", 0, warrant_attributes(root))
+    warrant_span = (ROOT, None, "invoke_workflow segurai.session", 0, warrant_attributes(root))
 
     # Observed spans first, then the warrant span: the observed chain is replaced.
     store = Store(":memory:")

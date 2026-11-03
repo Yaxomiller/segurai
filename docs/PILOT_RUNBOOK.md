@@ -1,12 +1,12 @@
 # Pilot runbook
 
-How to run a 30-day design-partner pilot, from first call to final report. Written for whoever runs the pilot on both sides; no prior knowledge of warrant is assumed.
+How to run a 30-day design-partner pilot, from first call to final report. Written for whoever runs the pilot on both sides; no prior knowledge of Segurai is assumed.
 
 ---
 
 ## What a pilot is
 
-- **30 days, observe mode.** warrant records and flags what the partner's agents do. It blocks nothing. Nobody has to trust a new tool with production traffic on day one.
+- **30 days, observe mode.** Segurai records and flags what the partner's agents do. It blocks nothing. Nobody has to trust a new tool with production traffic on day one.
 - **One collector, one database, run by the partner.** Their data never leaves their infrastructure unless they choose to share a report.
 - **A weekly 30-minute review**, and a final report at day 30.
 - **Success looks like** at least one real finding the partner didn't know about, and a clear answer to "would you pay for the scope-creep report?"
@@ -31,8 +31,8 @@ How to run a 30-day design-partner pilot, from first call to final report. Writt
 On a trusted machine:
 
 ```bash
-pip install warrant-provenance
-warrant keygen --key org.key
+pip install segurai
+segurai keygen --key org.key
 ```
 
 This writes `org.key` (private) and `org.pub` (public).
@@ -53,28 +53,28 @@ Keep it in the same secrets store. Agents send it to the collector, and people t
 On the host that will run it:
 
 ```bash
-git clone <this repository> warrant && cd warrant
+git clone <this repository> segurai && cd segurai
 mkdir -p deploy/keys && cp /secure/place/org.pub deploy/keys/org.pub
-export WARRANT_COLLECTOR_TOKEN='<the token>'
+export SEGURAI_COLLECTOR_TOKEN='<the token>'
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
 It listens on `127.0.0.1:4318` only. Put the partner's usual TLS reverse proxy in front of it. With Caddy that is two lines:
 
 ```
-warrant.partner-internal.example {
+segurai.partner-internal.example {
     reverse_proxy 127.0.0.1:4318
 }
 ```
 
-Check it is up: `https://warrant.partner-internal.example/healthz` should say `ok`.
+Check it is up: `https://segurai.partner-internal.example/healthz` should say `ok`.
 
 ### 4. Connect the agents
 
 **Option A: zero-integration** (same day, no code changes). If the agents already emit OpenTelemetry, point the exporter at the collector with the token:
 
 ```bash
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://warrant.partner-internal.example/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://segurai.partner-internal.example/v1/traces
 export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20<the token>"
 ```
 
@@ -83,19 +83,19 @@ Standard GenAI spans (`invoke_agent`, `execute_tool`) become **observed chains**
 **Option B: the SDK** (signed chains, Tier 1 checks, the judge). In the agent service:
 
 ```python
-import warrant
-from warrant.instrument import otel
+import segurai
+from segurai.instrument import otel
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-warrant.configure(key="/run/secrets/org.key")   # observe mode is the default
+segurai.configure(key="/run/secrets/org.key")   # observe mode is the default
 provider = TracerProvider()
 provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))  # reads the OTEL_* variables above
 otel.enable(provider, capture_request=True)      # False if request text must not be stored
 ```
 
-Then wrap each request in `warrant.session(...)`, mark agents with `@warrant.agent` or `agent_node`, and describe tools with `ActionSpec`. See the README.
+Then wrap each request in `segurai.session(...)`, mark agents with `@segurai.agent` or `agent_node`, and describe tools with `ActionSpec`. See the README.
 
 ### 5. (Optional) Export standing permissions
 
@@ -103,7 +103,7 @@ To compare what agents *can* do with what they *did*, export their permissions f
 
 ### 6. Confirm it works
 
-Run one real agent task, then open `https://warrant.partner-internal.example/`. Log in with any user name and the token as the password. The session should be listed; open it and check the chain looks right.
+Run one real agent task, then open `https://segurai.partner-internal.example/`. Log in with any user name and the token as the password. The session should be listed; open it and check the chain looks right.
 
 ---
 
@@ -112,14 +112,14 @@ Run one real agent task, then open `https://warrant.partner-internal.example/`. 
 Before the call, the partner's engineer runs these (any machine with access to the database, or inside the container):
 
 ```bash
-warrant report --days 7 --format csv --out week-N-unused.csv
-warrant report --days 7 --format html --out week-N-report.html
+segurai report --days 7 --format csv --out week-N-unused.csv
+segurai report --days 7 --format html --out week-N-report.html
 ```
 
 If an Anthropic API key is available, judge the week's flagged actions (each flagged action is one paid call):
 
 ```bash
-warrant judge <session_id> --yes
+segurai judge <session_id> --yes
 ```
 
 On the call, go through three questions in order:
@@ -148,8 +148,8 @@ Next week:
 ## Day 30: wrap up
 
 ```bash
-warrant report --days 30 --format html --out pilot-final-report.html
-warrant report --days 30 --format csv  --out pilot-unused-permissions.csv
+segurai report --days 30 --format html --out pilot-final-report.html
+segurai report --days 30 --format csv  --out pilot-unused-permissions.csv
 ```
 
 In the final meeting:
@@ -172,12 +172,12 @@ Then delete the data unless agreed otherwise: `docker compose -f deploy/compose.
 | Each action: operation, resource, size, findings, and the evidence the agent reported | Anything from spans that aren't agent or tool spans, beyond their ids and names |
 | Tool-call arguments, for observed chains (if the framework records them) | |
 
-Everything sits in one SQLite file in the `warrant-data` volume.
+Everything sits in one SQLite file in the `segurai-data` volume.
 
 To back it up while running:
 
 ```bash
-docker compose -f deploy/compose.yaml exec warrant warrant backup --out /data/backup.db
+docker compose -f deploy/compose.yaml exec segurai segurai backup --out /data/backup.db
 ```
 
 ---
@@ -188,7 +188,7 @@ docker compose -f deploy/compose.yaml exec warrant warrant backup --out /data/ba
 |---|---|
 | Agents get `401 unauthorized` | The token is missing or wrong in `OTEL_EXPORTER_OTLP_TRACES_HEADERS`. The value must be `Authorization=Bearer%20<token>`. |
 | No sessions appear | Wrong endpoint (it must end in `/v1/traces`), or the exporter uses gRPC. Use the HTTP exporter (`http/protobuf`). |
-| Pages say "signatures not checked" | The collector has no public key. Check that `deploy/keys/org.pub` exists and `WARRANT_KEY` points to it. |
+| Pages say "signatures not checked" | The collector has no public key. Check that `deploy/keys/org.pub` exists and `SEGURAI_KEY` points to it. |
 | Sessions show "Observed, not authorized" | Expected with zero-integration. Only the SDK produces signed, checked chains. |
 | "Verification FAILED: invalid signature" | The agents sign with a different key than the collector checks against, or a record was altered. Compare the key ids in the message. |
-| The collector won't start: "refusing to listen beyond this machine without a token" | Set `WARRANT_COLLECTOR_TOKEN`. |
+| The collector won't start: "refusing to listen beyond this machine without a token" | Set `SEGURAI_COLLECTOR_TOKEN`. |

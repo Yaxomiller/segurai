@@ -7,8 +7,8 @@ calls and HTTP requests, with no new dashboard to adopt.
 
 Span names follow the OpenTelemetry GenAI semantic conventions:
 
-    warrant.session(...)   ->  "invoke_workflow warrant.session"
-    @warrant.agent(name)   ->  "invoke_agent <name>"
+    segurai.session(...)   ->  "invoke_workflow segurai.session"
+    @segurai.agent(name)   ->  "invoke_agent <name>"
     tool call / act()      ->  "execute_tool <tool name>"
 
 Each span also carries warrant's own attributes under the "warrant." prefix.
@@ -18,7 +18,7 @@ the chain and re-check every signature itself.
 
 Usage:
 
-    from warrant.instrument import otel
+    from segurai.instrument import otel
     otel.enable()            # uses the global TracerProvider
 
 Spans nest correctly because each one is opened as the *current* span while
@@ -39,7 +39,7 @@ try:
     from opentelemetry import context as otel_context
 except ImportError as exc:  # pragma: no cover - only without the optional extra
     raise ImportError(
-        "warrant.instrument.otel needs OpenTelemetry: pip install 'warrant-provenance[otel]'"
+        "segurai.instrument.otel needs OpenTelemetry: pip install 'segurai[otel]'"
     ) from exc
 
 from .._version import __version__
@@ -91,7 +91,7 @@ def warrant_attributes(w: Warrant) -> dict[str, Any]:
     if w.parent_id:
         attrs["warrant.parent_id"] = w.parent_id
     if w.key_id:
-        attrs["warrant.key_id"] = w.key_id
+        attrs["segurai.key_id"] = w.key_id
     if w.signature:
         attrs["warrant.signature"] = base64.b64encode(w.signature).decode("ascii")
     return attrs
@@ -149,7 +149,7 @@ class OtelListener(Listener):
         }
         if self.capture_request:
             attrs["warrant.request"] = session.request
-        with self._tracer.start_as_current_span("invoke_workflow warrant.session", attributes=attrs):
+        with self._tracer.start_as_current_span("invoke_workflow segurai.session", attributes=attrs):
             with self._baggage(session.root_warrant):
                 yield
 
@@ -189,7 +189,7 @@ class OtelListener(Listener):
             _flag_violation(span, record)
             return
 
-        # A bare warrant.act() with no tool span around it: record it as a
+        # A bare segurai.act() with no tool span around it: record it as a
         # short span of its own, so it still shows up in the trace.
         tool_name = str(record.detail.get("tool") or record.operation)
         attrs = {
@@ -232,7 +232,7 @@ def warrant_from_baggage(ctx: Any = None) -> Warrant | None:
     """On a receiving service: the warrant a caller put in baggage, if any.
 
     The result is NOT verified yet - check it with your Authority before
-    delegating from it (``warrant.delegate(..., parent=w)`` does that).
+    delegating from it (``segurai.delegate(..., parent=w)`` does that).
     """
     token = baggage.get_baggage(BAGGAGE_KEY, ctx)
     return import_warrant(str(token)) if token else None

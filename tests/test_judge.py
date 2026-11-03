@@ -10,12 +10,12 @@ import httpx2
 import pytest
 from anthropic import Anthropic, DefaultHttpxClient
 
-import warrant
-from warrant import Check, Scope
-from warrant._claude import FALLBACK_BETA
-from warrant.collector.otlp import OBSERVED_FINDING
-from warrant.collector.web import session_page
-from warrant.judge import (
+import segurai
+from segurai import Check, Scope
+from segurai._claude import FALLBACK_BETA
+from segurai.collector.otlp import OBSERVED_FINDING
+from segurai.collector.web import session_page
+from segurai.judge import (
     Judge,
     JudgeError,
     JudgeListener,
@@ -23,8 +23,8 @@ from warrant.judge import (
     needs_review,
     render_review,
 )
-from warrant.judge.judge import INSTRUCTIONS, ClaudeJudgeBackend
-from warrant.models import ActionRecord
+from segurai.judge.judge import INSTRUCTIONS, ClaudeJudgeBackend
+from segurai.models import ActionRecord
 
 GRANTED = Scope.of(
     operations=["read", "archive"], targets=["crm.*"], max_scale=50, max_total=50,
@@ -49,19 +49,19 @@ class FakeJudge:
 
 
 def _session(note=None):
-    with warrant.session(principal="sarah@company.com", request="clean up our old sales records",
+    with segurai.session(principal="sarah@company.com", request="clean up our old sales records",
                          scope=GRANTED) as s:
-        warrant.act("read", "crm.opportunities", scale=412)                  # clean: never judged
+        segurai.act("read", "crm.opportunities", scale=412)                  # clean: never judged
         detail = {"days_since_activity": [200, 12, 400]}
         if note:
             detail["note"] = note
-        warrant.act("archive", "crm.opportunities", scale=3, **detail)      # failed a condition
-        warrant.act("archive", "crm.opportunities", scale=2)                # unverifiable
+        segurai.act("archive", "crm.opportunities", scale=3, **detail)      # failed a condition
+        segurai.act("archive", "crm.opportunities", scale=2)                # unverifiable
     return s.session_id
 
 
 def _store():
-    return warrant._runtime.store
+    return segurai._runtime.store
 
 
 def _flagged(sid, scale):
@@ -105,8 +105,8 @@ def test_agent_written_text_cannot_close_the_review_block():
 
 
 def test_long_texts_are_clipped_visibly():
-    with warrant.session(principal="p", request="r", scope=GRANTED) as s:
-        warrant.act("archive", "crm.opportunities", scale=2, note="x" * 5000)
+    with segurai.session(principal="p", request="r", scope=GRANTED) as s:
+        segurai.act("archive", "crm.opportunities", scale=2, note="x" * 5000)
     (record,) = _store().actions_for_session(s.session_id)
     note = build_review(_store(), record)["action"]["reported"]["note"]
     assert len(note) < 2100 and "clipped 3000 characters" in note
@@ -130,7 +130,7 @@ def test_verdicts_sit_beside_tier1_and_never_change_it():
     sid = _session()
     Judge(FakeJudge("within_intent")).review_session(_store(), sid)
     assert _flagged(sid, 3).allowed is False                                # Tier 1's FAIL stands
-    text = warrant.render(sid, charset="ascii")
+    text = segurai.render(sid, charset="ascii")
     assert "[FAIL   ] archive crm.opportunities scale=3" in text
     assert "judge: within_intent (high) - One deal had customer activity" in text
 
@@ -154,7 +154,7 @@ def test_a_malformed_verdict_is_an_error_and_nothing_is_stored():
 
 def test_the_listener_judges_flagged_actions_as_they_happen():
     backend = FakeJudge()
-    warrant.add_listener(JudgeListener(Judge(backend)))
+    segurai.add_listener(JudgeListener(Judge(backend)))
     sid = _session()
     assert len(backend.calls) == 2
     assert len(_store().verdicts_for_session(sid)) == 2

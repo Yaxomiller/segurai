@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "warrant-provenance"
+name = "segurai"
 dynamic = ["version"]
 description = "Provenance and authority for AI agent chains - who authorized what your agents did"
 readme = "README.md"
@@ -38,26 +38,26 @@ mcp = ["mcp>=2.0"]
 collector = ["opentelemetry-proto>=1.30"]
 intent = ["anthropic>=1.5"]
 judge = ["anthropic>=1.5"]
-all = ["warrant-provenance[otel,langgraph,mcp,collector,intent,judge]"]
+all = ["segurai[otel,langgraph,mcp,collector,intent,judge]"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "opentelemetry-exporter-otlp-proto-http>=1.30",
-    "warrant-provenance[all]",
+    "segurai[all]",
 ]
 
 [project.scripts]
-warrant = "warrant.cli:main"
+segurai = "segurai.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "warrant._version.__version__" }
+version = { attr = "segurai._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 # py.typed tells type checkers the package ships its own type hints.
 [tool.setuptools.package-data]
-warrant = ["py.typed"]
+segurai = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
