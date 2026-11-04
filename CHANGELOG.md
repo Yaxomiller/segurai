@@ -11,6 +11,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `judge-v2`: reviews now carry `limits.source`, the instructions say how to weigh a stated limit against an estimated one, and the bar for `needs_human` is stated (genuine doubt, not "someone should look").
 - The review payload is 22% smaller — five earlier actions instead of ten, and scopes spelled out only for the top and acting hops — to pull latency toward the 2 s target from a measured 3.9 s.
 - Both eval sets now have `dev`/`test` splits, with every case that informed a prompt change moved to `dev`. Seven Tier 2 labels were corrected where the judge's reading was better than mine; each says so in its notes.
+- Both evals now report what the run actually used — calls, fresh and cached input tokens, output tokens — and an estimated cost from a small price table, so nobody has to trust an estimate. Unpriced models report tokens without inventing a dollar figure.
 - Raw reports kept in `evals/results/2026-11-05/`.
 
 ### Tamper-evident log (M7)

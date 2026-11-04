@@ -18,15 +18,94 @@ error types (IntentError, JudgeError).
 from __future__ import annotations
 
 import time
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
-__all__ = ["DEFAULT_MODEL", "FALLBACK_BETA", "ModelCallError", "ModelRefusal",
-           "anthropic_module", "default_client", "structured_call"]
+__all__ = ["DEFAULT_MODEL", "FALLBACK_BETA", "PRICES", "ModelCallError", "ModelRefusal",
+           "UsageTotals", "anthropic_module", "default_client", "structured_call"]
 
 DEFAULT_MODEL = "claude-opus-5"
 
 #: Beta flag for server-side refusal fallbacks in their "default" form.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+#: List prices in dollars per million tokens, as (input, output). Only the
+#: models this library defaults to are listed; anything else reports tokens
+#: without a dollar figure rather than guessing.
+PRICES = {
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+#: A cached prefix is read at a tenth of the input price and written at 1.25x.
+CACHE_READ_MULTIPLIER = 0.10
+CACHE_WRITE_MULTIPLIER = 1.25
+
+
+@dataclass
+class UsageTotals:
+    """What a run of calls actually used, straight from the API's own counts.
+
+    Reported so nobody has to trust an estimate: the API returns exact token
+    counts per call, and the only guess left is the price table above.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    models: set[str] = field(default_factory=set)
+
+    def add(self, usage: Mapping[str, Any] | None, model: str | None = None) -> None:
+        if not usage:
+            return
+        self.calls += 1
+        self.input_tokens += int(usage.get("input_tokens") or 0)
+        self.output_tokens += int(usage.get("output_tokens") or 0)
+        self.cache_read_tokens += int(usage.get("cache_read_input_tokens") or 0)
+        self.cache_write_tokens += int(usage.get("cache_creation_input_tokens") or 0)
+        if model:
+            self.models.add(model)
+
+    @property
+    def estimated_cost(self) -> float | None:
+        """Dollars, or None when a model in the run has no published price here."""
+        if not self.models or any(m not in PRICES for m in self.models):
+            return None
+        # One model per run in practice; with several, charge each at its own
+        # rate would need per-call detail, so the most expensive one is used.
+        price_in, price_out = max(PRICES[m] for m in self.models)
+        dollars = (
+            self.input_tokens * price_in
+            + self.cache_read_tokens * price_in * CACHE_READ_MULTIPLIER
+            + self.cache_write_tokens * price_in * CACHE_WRITE_MULTIPLIER
+            + self.output_tokens * price_out
+        )
+        return dollars / 1_000_000
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "calls": self.calls, "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens, "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens, "models": sorted(self.models),
+            "estimated_cost_usd": self.estimated_cost,
+        }
+
+    def to_text(self) -> str:
+        cost = self.estimated_cost
+        money = f"${cost:.2f}" if cost is not None else "cost unknown for this model"
+        # The API counts cached tokens SEPARATELY from input_tokens, so they
+        # are an addition to that number, not a part of it.
+        cached = f" plus {self.cache_read_tokens:,} read from cache" if self.cache_read_tokens else ""
+        written = (f" and {self.cache_write_tokens:,} written to cache"
+                   if self.cache_write_tokens else "")
+        return (f"{self.calls} API call(s): {self.input_tokens:,} fresh input tokens{cached}"
+                f"{written}, {self.output_tokens:,} output. Estimated {money} at list prices - "
+                f"your console has the authoritative figure.")
 
 
 class ModelCallError(RuntimeError):

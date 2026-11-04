@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from .._claude import UsageTotals
 from .judge import ESTIMATED_LIMIT, STATED_LIMIT, VERDICTS, Judge, JudgeError
 
 __all__ = ["JudgeCase", "CaseResult", "EvalReport", "load_cases", "run_eval", "AGREEMENT_TARGET"]
@@ -130,6 +131,7 @@ class CaseResult:
 @dataclass
 class EvalReport:
     results: list[CaseResult]
+    usage: UsageTotals = field(default_factory=UsageTotals)
 
     @property
     def agreement(self) -> float:
@@ -176,6 +178,7 @@ class EvalReport:
             "ambiguous_agreement": self.ambiguous_agreement, "dangerous_misses": self.dangerous_misses,
             "deferrals": self.deferrals, "errors": self.errors, "meets_target": self.meets_target,
             "latency_ms": self.latency_ms(), "confusion": self.confusion(),
+            "usage": self.usage.to_dict(),
             "results": [asdict(r) for r in self.results],
         }
 
@@ -192,6 +195,7 @@ class EvalReport:
             f"Agreement on all {len(self.results)} cases: {self.agreement:.1%} - "
             f"deferrals to a human: {self.deferrals} - errors: {self.errors}",
             f"Latency: p50 {lat['p50']:.0f} ms, p95 {lat['p95']:.0f} ms (roadmap target under 2000 ms)",
+            f"Cost: {self.usage.to_text()}" if self.usage.calls else "",
             "",
             f"Milestone M4: {'MET' if self.meets_target else 'NOT MET'}",
             "",
@@ -215,6 +219,7 @@ def run_eval(judge: Judge, cases: Iterable[JudgeCase],
     """Judge every case. A failed call counts as disagreement, never as a pass."""
     cases = list(cases)
     results: list[CaseResult] = []
+    usage = UsageTotals()
     for i, case in enumerate(cases, start=1):
         try:
             v = judge.judge(case.review, action_id=case.id, session_id="eval")
@@ -223,7 +228,9 @@ def run_eval(judge: Judge, cases: Iterable[JudgeCase],
         except JudgeError as exc:
             result = CaseResult(case.id, case.split, case.ambiguous, case.expected, None, None, "",
                                 error=str(exc))
+        usage.add(getattr(judge.backend, "last_usage", None),
+                  getattr(judge.backend, "last_model", None))
         results.append(result)
         if progress is not None:
             progress(i, len(cases), result)
-    return EvalReport(results)
+    return EvalReport(results, usage=usage)

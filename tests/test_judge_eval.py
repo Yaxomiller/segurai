@@ -124,3 +124,44 @@ def test_scoring_still_separates_dev_from_test():
     assert report.meets_target
     assert {r.split for r in report.results} == {"dev"}
     assert "dev 20" in report.to_markdown()
+
+
+# ---- what the run cost ---------------------------------------------------
+
+class CountingJudge(LabelJudge):
+    """A backend that reports token usage, as the real one does."""
+
+    last_usage = {"input_tokens": 752, "output_tokens": 200,
+                  "cache_read_input_tokens": 778, "cache_creation_input_tokens": 0}
+    last_model = "claude-opus-5"
+
+
+def test_a_run_reports_what_it_actually_used():
+    report = run_eval(Judge(CountingJudge()), CASES[:10])
+    usage = report.usage
+    assert usage.calls == 10
+    assert usage.input_tokens == 7520 and usage.output_tokens == 2000
+    assert usage.cache_read_tokens == 7780
+
+    # 7520 input + 7780 cached at a tenth + 2000 output, at Opus 5 list prices.
+    expected = (7520 * 5.0 + 7780 * 0.5 + 2000 * 25.0) / 1_000_000
+    assert abs(usage.estimated_cost - expected) < 1e-9
+    assert "10 API call(s)" in report.to_markdown()
+    assert "your console has the authoritative figure" in report.to_markdown()
+    assert report.to_dict()["usage"]["estimated_cost_usd"] == usage.estimated_cost
+
+
+def test_an_unpriced_model_reports_tokens_without_inventing_a_price():
+    class Unknown(CountingJudge):
+        last_model = "some-future-model"
+
+    report = run_eval(Judge(Unknown()), CASES[:3])
+    assert report.usage.calls == 3 and report.usage.input_tokens == 2256
+    assert report.usage.estimated_cost is None
+    assert "cost unknown for this model" in report.to_markdown()
+
+
+def test_a_backend_that_reports_nothing_costs_nothing_rather_than_crashing():
+    report = run_eval(Judge(LabelJudge()), CASES[:3])     # no last_usage at all
+    assert report.usage.calls == 0
+    assert "API call(s)" not in report.to_markdown()

@@ -21,6 +21,8 @@ segurai eval-judge --split test --out judge-test.json --yes    # report this
 **Tune on `dev`, report `test`.** Every case whose result informed a prompt change lives in `dev`, because it can never be a clean test again.
 
 It prints agreement (overall and on ambiguous cases), dangerous misses, deferrals, latency and a confusion table. It exits 0 only if the target is met.
+Each run ends with what it actually used — API calls, fresh and cached input tokens, output tokens, and an estimated cost at list prices. The token counts come from the API itself; only the prices are a table in `_claude.py`, so for the authoritative bill see the [Anthropic console](https://console.anthropic.com/settings/usage). Expect roughly **$0.30 for the judge's 30 test cases** and **$0.40 for the intent compiler's 32**: the instructions are cached, so most calls pay a tenth of the input price.
+
 
 ## What's in the set
 

@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from .._claude import UsageTotals
 from .compiler import PROMPT_VERSION, IntentCompiler, IntentError
 from .contract import Catalog, ScopeContract
 
@@ -171,6 +172,7 @@ class EvalReport:
     results: list[CaseResult]
     model: str | None = None
     prompt_version: str = PROMPT_VERSION
+    usage: UsageTotals = field(default_factory=UsageTotals)
 
     @property
     def total(self) -> int:
@@ -199,6 +201,7 @@ class EvalReport:
             "meets_milestone": self.acceptable_rate >= MILESTONE_TARGET,
             "field_accuracy": self.field_accuracy(),
             "errors": sum(1 for r in self.results if r.error),
+            "usage": self.usage.to_dict(),
             "results": [asdict(r) for r in self.results],
         }
 
@@ -222,6 +225,8 @@ class EvalReport:
             f"| Irreversibility | {acc['irreversible']:.1%} |",
             f"| Constraint recall (average) | {acc['constraint_recall']:.1%} |",
         ]
+        if self.usage.calls:
+            lines += ["", f"Cost: {self.usage.to_text()}"]
         misses = [r for r in self.results if not r.acceptable]
         if misses:
             lines += ["", "## Not acceptable", ""]
@@ -259,6 +264,7 @@ def run_eval(compiler: IntentCompiler, cases: Iterable[IntentCase],
     """Compile and grade every case. A failed compile counts as not acceptable."""
     cases = list(cases)
     results: list[CaseResult] = []
+    usage = UsageTotals()
     model = None
     for i, case in enumerate(cases, start=1):
         try:
@@ -267,7 +273,9 @@ def run_eval(compiler: IntentCompiler, cases: Iterable[IntentCase],
             result = grade(case, compiled.contract, compiler.catalog)
         except IntentError as exc:
             result = CaseResult(case.id, case.split, case.request, None, error=str(exc))
+        usage.add(getattr(compiler.backend, "last_usage", None),
+                  getattr(compiler.backend, "last_model", None))
         results.append(result)
         if progress is not None:
             progress(i, len(cases), result)
-    return EvalReport(results=results, model=model)
+    return EvalReport(results=results, model=model, usage=usage)

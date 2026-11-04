@@ -17,6 +17,8 @@ segurai eval-intent --cases evals/intent/cases.jsonl --catalog evals/intent/cata
 ```
 
 The command prints a Markdown summary, and exits with code 0 only if the milestone target is met.
+Each run ends with what it actually used — API calls, fresh and cached input tokens, output tokens, and an estimated cost at list prices. The token counts come from the API itself; only the prices are a table in `_claude.py`, so for the authoritative bill see the [Anthropic console](https://console.anthropic.com/settings/usage). Expect roughly **$0.30 for the judge's 30 test cases** and **$0.40 for the intent compiler's 32**: the instructions are cached, so most calls pay a tenth of the input price.
+
 
 **Use `dev` to tune the prompt; report `test`.** If the prompt is adjusted while looking at test results, the test score stops meaning anything.
 
