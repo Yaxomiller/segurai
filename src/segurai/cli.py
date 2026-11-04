@@ -394,8 +394,13 @@ def cmd_eval_judge(args: argparse.Namespace) -> int:
     from .judge.eval import load_cases, run_eval
 
     cases = load_cases(args.cases)
+    if args.split != "all":
+        cases = [c for c in cases if c.split == args.split]
     if args.limit:
         cases = cases[: args.limit]
+    if not cases:
+        print("No cases selected.")
+        return 1
     if not args.yes:
         print(f"This makes {len(cases)} calls to {args.model} on your Anthropic account, "
               f"which costs money. Re-run with --yes to go ahead.")
@@ -537,6 +542,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("eval-judge", help="grade the Tier 2 judge on labeled cases (calls Claude)")
     s.add_argument("--cases", default="evals/tier2/cases.jsonl")
+    s.add_argument("--split", default="test", choices=["dev", "test", "all"],
+                   help="dev to tune the prompt against, test to report (default: test)")
     s.add_argument("--limit", type=int, default=0, help="only the first N cases")
     s.add_argument("--yes", action="store_true", help="confirm the paid API calls")
     s.add_argument("--out", default=None, help="write full JSON results here")

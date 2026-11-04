@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### First live evals, and what they changed
+
+- **Intent compiler: 91.4% of held-out contracts acceptable** (32/35), against an 80% target. All three misses were labelling problems. `intent-v3` now defines `irreversible_expected` by whether the organisation can put the state back, which decides the two cases the old wording left open (a calendar invitation reaches a person; a pay rise effective next period does not move money yet).
+- **Tier 2 judge: 48.1% on ambiguous cases** against an 85% target, with one dangerous miss — target not met. The disagreements clustered on size limits (58% of session-total flags, 44% of per-action flags), and the cause was a missing fact: the judge saw `max_scale: 50` with no way to know whether a person stated it or the intent compiler estimated it.
+- `judge-v2`: reviews now carry `limits.source`, the instructions say how to weigh a stated limit against an estimated one, and the bar for `needs_human` is stated (genuine doubt, not "someone should look").
+- The review payload is 22% smaller — five earlier actions instead of ten, and scopes spelled out only for the top and acting hops — to pull latency toward the 2 s target from a measured 3.9 s.
+- Both eval sets now have `dev`/`test` splits, with every case that informed a prompt change moved to `dev`. Seven Tier 2 labels were corrected where the judge's reading was better than mine; each says so in its notes.
+- Raw reports kept in `evals/results/2026-11-05/`.
+
 ### Tamper-evident log (M7)
 
 - Every record written — session, warrant, action, verdict — also appends an entry to a hash chain, in the same transaction. Each entry's hash covers the entry before it, so editing a row, deleting a row, or removing, reordering or editing an entry all break the links.

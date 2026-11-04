@@ -5,7 +5,7 @@ Measures how well the intent compiler turns a request into a scope contract (mil
 | File | What it is |
 |---|---|
 | `catalog.json` | A made-up company's operations and resources. Every case is labeled against it. |
-| `cases.jsonl` | 50 labeled requests, one per line: 15 `dev`, 35 `test`. |
+| `cases.jsonl` | 50 labeled requests, one per line: 18 `dev`, 32 `test`. |
 
 ## Run it
 
@@ -19,6 +19,10 @@ segurai eval-intent --cases evals/intent/cases.jsonl --catalog evals/intent/cata
 The command prints a Markdown summary, and exits with code 0 only if the milestone target is met.
 
 **Use `dev` to tune the prompt; report `test`.** If the prompt is adjusted while looking at test results, the test score stops meaning anything.
+
+## What the first live run showed (5 November 2026)
+
+`intent-v2` scored **32/35 acceptable (91.4%)** against an 80% target — the milestone is met. All three misses were labelling problems, not model failures: two turned on a definition of "irreversible" that decided nothing for a calendar invitation or a scheduled pay rise, and one label had simply forgotten to allow `search`. The prompt now defines irreversible by whether the organisation can put the state back (`intent-v3`), those three cases moved to `dev`, and the full write-up is in [evals/results/2026-11-05/](../results/2026-11-05/README.md).
 
 ## How a case is labeled
 

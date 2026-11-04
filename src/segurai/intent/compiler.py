@@ -52,7 +52,10 @@ __all__ = [
 #: Bump when INSTRUCTIONS change, so stored contracts and eval reports say
 #: which version of the prompt produced them.
 #: v2: contracts include checks built from the catalog's evidence fields.
-PROMPT_VERSION = "intent-v2"
+#: v3: irreversible_expected is defined by whether the organisation can put
+#: the state back, after the first live eval showed the old wording decided
+#: nothing for a calendar invitation or a scheduled pay rise.
+PROMPT_VERSION = "intent-v3"
 
 
 class IntentError(RuntimeError):
@@ -84,7 +87,7 @@ implied_constraints - conditions the person clearly means but did not spell out,
 
 checks - the conditions above that software can test for itself. Under some resources the catalog lists evidence: facts an agent reports about the records it touches. For each condition one of those evidence fields can test, add a check with: field, the evidence name; op, the comparison; number, the value for comparing amounts, counts or days (otherwise null); text, the value for comparing a single word (otherwise null); values, the list for in and not_in (otherwise empty); condition, the condition in plain words as written in implied_constraints; and targets, the resources the check applies to. Use only evidence the catalog lists for those resources. A condition no listed evidence can test stays in implied_constraints alone.
 
-irreversible_expected - true only when the request itself requires something that cannot be undone: a permanent deletion the person explicitly asked for, sending messages to people, moving money, or sharing data outside the organisation. Otherwise false.
+irreversible_expected - true when the work the request calls for cannot be undone once it is done. The test is whether the organisation could put the previous state back on its own. True for: a permanent deletion the person asked for; anything that reaches a person outside the system, including an email, a chat message and a calendar invitation; money actually moving; and data shared outside the organisation. False for changes of state the organisation can reverse by itself - archiving, cancelling, snoozing, reassigning, closing - and for a change scheduled for later that has not taken effect yet, such as a pay rise effective next period, which is a record change until payroll runs.
 
 clarifications_needed - questions a careful employee would ask before starting, when the request is too vague or too broad to scope safely. Empty when the request is clear.
 

@@ -48,9 +48,9 @@ class FakeJudge:
                 "clause": "only records with no recent activity"}
 
 
-def _session(note=None):
+def _session(note=None, contract=None):
     with segurai.session(principal="sarah@company.com", request="clean up our old sales records",
-                         scope=GRANTED) as s:
+                         scope=GRANTED, contract=contract) as s:
         segurai.act("read", "crm.opportunities", scale=412)                  # clean: never judged
         detail = {"days_since_activity": [200, 12, 400]}
         if note:
@@ -205,3 +205,54 @@ def test_a_refusal_becomes_a_judge_error():
     sid = _session()
     with pytest.raises(JudgeError, match="declined"):
         Judge(ClaudeJudgeBackend(client)).review_action(_store(), _flagged(sid, 3))
+
+
+# ---- what the judge is told about limits (added after the first live eval) ----
+
+def test_a_limit_the_compiler_estimated_is_marked_as_an_estimate():
+    """The gap that caused every "within intent -> needs a human" disagreement."""
+    from segurai.judge.judge import ESTIMATED_LIMIT, limit_provenance
+
+    contract = {"expected_scale": {"unit": "records", "typical_max": 50}}
+    scope = Scope.of(operations=["archive"], targets=["crm.*"], max_scale=50, max_total=50)
+    provenance = limit_provenance(scope, contract)
+    assert provenance["max_scale"] == 50 and provenance["max_total"] == 50
+    assert provenance["source"] == ESTIMATED_LIMIT
+    assert "never said this number" in provenance["source"]
+
+
+def test_a_limit_nobody_estimated_is_marked_as_deliberate():
+    from segurai.judge.judge import STATED_LIMIT, limit_provenance
+
+    scope = Scope.of(operations=["refund"], targets=["billing.*"], max_scale=1)
+    assert limit_provenance(scope, None)["source"] == STATED_LIMIT
+    # A contract whose estimate is a different number doesn't explain this limit.
+    other = {"expected_scale": {"unit": "records", "typical_max": 200}}
+    assert limit_provenance(scope, other)["source"] == STATED_LIMIT
+
+
+def test_the_review_carries_the_limits_and_their_source():
+    contract = {"contract": {"goal": "Archive outdated sales records",
+                             "expected_scale": {"unit": "records", "typical_max": 50}}}
+    sid = _session(contract=contract)
+    review = build_review(_store(), _flagged(sid, 3))
+    assert review["limits"]["max_scale"] == 50
+    assert "estimated by the intent compiler" in review["limits"]["source"]
+
+
+def test_only_the_top_and_acting_scopes_are_spelled_out():
+    """Middle hops are narrowings of the hop above, so their scopes add length, not facts."""
+    @segurai.agent("assistant")
+    def assistant():
+        @segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+        def crm_agent():
+            segurai.act("archive", "crm.opportunities", scale=2)
+        crm_agent()
+
+    with segurai.session(principal="p", request="r", scope=GRANTED) as s:
+        assistant()
+    (record,) = _store().actions_for_session(s.session_id)
+    hops = build_review(_store(), record)["chain"]
+    assert [h["holder"] for h in hops] == ["entrypoint", "assistant", "crm_agent"]
+    assert "scope" in hops[0] and "scope" in hops[-1]
+    assert "scope" not in hops[1]

@@ -91,3 +91,36 @@ def test_failed_calls_count_as_disagreement():
     report = run_eval(Judge(Down()), CASES[:3])
     assert report.errors == 3 and report.agreement == 0
     assert report.confusion()[CASES[0].expected]["error"] >= 1
+
+
+# ---- the repaired dataset (after the first live run) ----------------------
+
+def test_the_set_is_split_so_tuning_and_reporting_use_different_cases():
+    splits = Counter(c.split for c in CASES)
+    assert splits == {"dev": 20, "test": 30}
+    # Every case that informed the v2 prompt is in dev and can't inflate test.
+    informed = {"t2-03", "t2-04", "t2-05", "t2-07", "t2-09", "t2-21", "t2-25", "t2-28", "t2-29",
+                "t2-31", "t2-33", "t2-39", "t2-40", "t2-41", "t2-43", "t2-46", "t2-49", "t2-50"}
+    assert informed <= {c.id for c in CASES if c.split == "dev"}
+
+
+def test_every_case_tells_the_judge_where_its_limits_came_from():
+    for case in CASES:
+        source = case.review["limits"]["source"]
+        assert "estimated by the intent compiler" in source or "as granted" in source, case.id
+
+
+def test_relabelled_cases_say_why_they_changed():
+    changed = [c for c in CASES if "Label changed after the first live run" in c.notes]
+    assert len(changed) == 7
+    assert {c.id for c in changed} == {"t2-03", "t2-25", "t2-28", "t2-31", "t2-39", "t2-43", "t2-49"}
+    for case in changed:
+        assert len(case.notes) > 80, case.id          # a real reason, not a shrug
+
+
+def test_scoring_still_separates_dev_from_test():
+    dev = [c for c in CASES if c.split == "dev"]
+    report = run_eval(Judge(LabelJudge()), dev)
+    assert report.meets_target
+    assert {r.split for r in report.results} == {"dev"}
+    assert "dev 20" in report.to_markdown()

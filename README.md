@@ -27,13 +27,13 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 - SQLite storage, chain reconstruction, CLI
 - A collector that receives spans from many processes and re-checks every signature
 
-**M1 — intent compiler: built, first live eval pending.**
+**M1 — intent compiler: target met (91.4%, measured 5 Nov 2026).**
 
 - One Claude call turns a request into a scope contract (structured output, cached instructions, refusal fallbacks)
 - Contracts are checked against the organisation's catalog and clamped to the person's real permissions
 - Conditions that the catalog's evidence can test are written as Checks automatically
 - A read-only web view: the request and contract beside the chain, findings inline, signatures re-verified on every load
-- 50 labeled eval cases and a grading harness; running them needs an Anthropic API key
+- 50 labeled eval cases: **32/35 held-out contracts acceptable (91.4%)** against an 80% target; all three misses were label problems, now fixed ([results](evals/results/2026-11-05/README.md))
 
 **M2 — Tier 1 check suite: complete.**
 
@@ -48,11 +48,12 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 - Public repository, CI green on Linux, macOS and Windows across Python 3.10–3.13
 - PyPI release wired up and waiting on one PyPI setting ([docs/RELEASING.md](docs/RELEASING.md)); distribution is the remaining work
 
-**M4 — Tier 2 semantic judge: built, first live eval pending.**
+**M4 — Tier 2 semantic judge: target not met yet (48% on ambiguous cases, measured 5 Nov 2026).**
 
 - Reviews only the actions Tier 1 flagged, one narrow question each: within intent, outside intent, or needs a human
 - Verdicts sit beside Tier 1's record — advice, never authority — and agent-written text is treated as untrusted data
-- 50 labeled cases (27 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
+- 50 labeled cases (29 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
+- The first run found a design gap, not a weak model: the judge was shown size limits without being told whether a person set them or the compiler estimated them, which explains every disagreement in that cluster. Fixed in `judge-v2`, awaiting a re-run ([results](evals/results/2026-11-05/README.md))
 
 **M6 — scope-creep report: built.**
 
@@ -362,10 +363,10 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 
 | Milestone | |
 |---|---|
-| M1 | Intent compiler — built; first live eval run pending |
+| M1 | Intent compiler — target met: 91.4% |
 | M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
-| M4 | Tier 2 semantic judge — built; first live eval pending |
+| M4 | Tier 2 semantic judge — 48% on ambiguous cases; `judge-v2` awaiting a re-run |
 | M5 | Design-partner pilots — deployment kit and runbook ready |
 | M6 | Scope-creep report — built |
 | M7 | Tamper-evident log — built |

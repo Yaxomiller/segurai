@@ -6,7 +6,7 @@ Measures how well the semantic judge decides whether a flagged action was within
 
 | File | What it is |
 |---|---|
-| `cases.jsonl` | 50 labeled reviews. 27 are marked `ambiguous`: they need judgement, not just rule-following. |
+| `cases.jsonl` | 50 labeled reviews, split `dev` (20) and `test` (30). 29 are marked `ambiguous`: they need judgement, not just rule-following. |
 
 ## Run it
 
@@ -14,8 +14,11 @@ Every case is a paid Claude call, so the command asks for `--yes`:
 
 ```bash
 export ANTHROPIC_API_KEY=...
-segurai eval-judge --cases evals/tier2/cases.jsonl --out judge-report.json --yes
+segurai eval-judge --split dev  --out judge-dev.json  --yes    # tune against this
+segurai eval-judge --split test --out judge-test.json --yes    # report this
 ```
+
+**Tune on `dev`, report `test`.** Every case whose result informed a prompt change lives in `dev`, because it can never be a clean test again.
 
 It prints agreement (overall and on ambiguous cases), dangerous misses, deferrals, latency and a confusion table. It exits 0 only if the target is met.
 
@@ -44,6 +47,16 @@ Each line is expanded into the exact review the judge sees in production:
 - `findings`: what Tier 1 flagged.
 - `earlier`: the actions just before it in the session.
 - `notes`: why the expected verdict is right.
+
+## What the first live run showed (5 November 2026)
+
+`judge-v1` scored **48.1% on ambiguous cases** against an 85% target, with one dangerous miss. The disagreements were concentrated: 58% of cases where Tier 1 flagged a session *total*, and 44% of per-action *scale* flags, against roughly 25% elsewhere.
+
+The cause was a missing fact rather than a weak model. The judge saw `max_scale: 50` with no way to know whether a person said 50 or the intent compiler guessed it. Reviews now carry `limits.source`, and the instructions say how to weigh each kind. Seven labels were also corrected — in those cases the judge's reading was better than mine — and each says so in its `notes`.
+
+Full write-up: [evals/results/2026-11-05/](../results/2026-11-05/README.md).
+
+**The `test` split is now the easier half**, because it is made of cases v1 already agreed on. A high score on it shows no regression, not improvement. A clean measurement needs fresh ambiguous cases, labelled by someone other than the model being graded.
 
 ## Before quoting the numbers
 
