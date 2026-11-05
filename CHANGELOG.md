@@ -2,7 +2,9 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] — 2026-11-05
+
+The tamper-evident log, and the first live measurements of both model-dependent pieces.
 
 ### First live evals, and what they changed
 
