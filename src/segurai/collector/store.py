@@ -378,6 +378,18 @@ class Store:
                             payload_hash=r["payload_hash"], prev_hash=r["prev_hash"],
                             entry_hash=r["entry_hash"]) for r in rows]
 
+    def change_marker(self) -> tuple[int, int]:
+        """Changes whenever the database does - through this connection or any other.
+
+        ``data_version`` moves when ANOTHER connection commits to the file;
+        ``total_changes`` counts every row this connection changed, including
+        by direct SQL. Together they let a cache prove nothing changed, rather
+        than assume it.
+        """
+        with self._lock:
+            version = self._conn.execute("PRAGMA data_version").fetchone()[0]
+            return int(version), int(self._conn.total_changes)
+
     def ledger_head(self) -> tuple[int, str]:
         """The newest entry's sequence number and hash; (0, GENESIS) when empty."""
         rows = self._read("SELECT seq, entry_hash FROM ledger ORDER BY seq DESC LIMIT 1")

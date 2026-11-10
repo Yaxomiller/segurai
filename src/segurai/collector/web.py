@@ -36,6 +36,7 @@ from __future__ import annotations
 import html
 import re
 import time
+import weakref
 from collections import defaultdict
 from contextvars import ContextVar
 from datetime import timedelta
@@ -193,22 +194,23 @@ def _link(session_id: str) -> str:
 
 # ---- what every page shares ------------------------------------------------------
 
-_AUDIT_CACHE: dict[int, tuple[float, int, AuditReport]] = {}
-#: How long the integrity chip in the header may be stale. The audit page,
-#: evidence packs and alerts always run a fresh audit.
+#: Audit results per store, reused only while the database provably hasn't
+#: changed. Keyed by the store object itself (weakly) - never by id(), which
+#: Python reuses: a reopened database must never inherit an old "all clear".
+_AUDIT_CACHE: "weakref.WeakKeyDictionary[Store, tuple[float, Any, Any, AuditReport]]" = weakref.WeakKeyDictionary()
+#: An upper bound on reuse even when nothing changed.
 AUDIT_CACHE_SECONDS = 20.0
 
 
 def _integrity(store: Store, verifier: Authority | None, fresh: bool = False) -> AuditReport:
-    """The tamper-evident log's audit, re-run at most every few seconds for page headers."""
-    key = id(store)
-    head, _ = store.ledger_head()
-    cached = _AUDIT_CACHE.get(key)
-    if (not fresh and cached is not None and cached[1] == head
+    """The tamper-evident log's audit, reused only while nothing in the database changed."""
+    marker = store.change_marker()
+    cached = _AUDIT_CACHE.get(store)
+    if (not fresh and cached is not None and cached[1] == marker and cached[2] is verifier
             and time.monotonic() - cached[0] < AUDIT_CACHE_SECONDS):
-        return cached[2]
+        return cached[3]
     report = store.audit(verifier)
-    _AUDIT_CACHE[key] = (time.monotonic(), head, report)
+    _AUDIT_CACHE[store] = (time.monotonic(), store.change_marker(), verifier, report)
     return report
 
 

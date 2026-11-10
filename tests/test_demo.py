@@ -149,3 +149,31 @@ def test_demo_commands(tmp_path, capsys):
     assert cli_main(["demo", "tamper", "--dir", folder]) == 1          # already rewritten
     assert cli_main(["demo", "cover-up", "--dir", folder]) == 0
     assert "signed checkpoint still disagrees" in capsys.readouterr().out
+
+
+def test_a_reopened_database_never_inherits_an_old_all_clear(tmp_path):
+    """Regression: the header's audit cache was keyed by id(store), which Python reuses."""
+    import gc
+
+    from segurai.collector import web
+
+    for _ in range(5):
+        _, store, verifier = _seed(tmp_path)
+        assert web._integrity(store, verifier).ok              # cache an "all clear"
+        store.close()
+        del store
+        gc.collect()                                            # free the address for reuse
+        demo.tamper(tmp_path / "demo")
+        reopened = Store(demo.demo_paths(tmp_path / "demo")[0])
+        assert not web._integrity(reopened, verifier).ok
+        reopened.close()
+
+
+def test_the_cache_notices_a_change_through_the_same_connection(tmp_path):
+    from segurai.collector import web
+
+    _, store, verifier = _seed(tmp_path)
+    assert web._integrity(store, verifier).ok
+    store._conn.execute("UPDATE actions SET scale = 4 WHERE scale = 400")
+    store._conn.commit()
+    assert not web._integrity(store, verifier).ok

@@ -139,6 +139,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, body: bytes, content_type: str = "text/plain; charset=utf-8",
               extra_headers: Any = None) -> None:
+        # A page view is logged BEFORE the page goes out: a viewer who reads
+        # it and disconnects is still on the record, and the entry exists by
+        # the time anyone could look for it.
+        pending = getattr(self, "_access_pending", None)
+        if pending is not None:
+            self._access_pending = None
+            email, path, ip = pending
+            self.server.auth.log(email, self.command, path, status, ip)
         if status >= 400:
             self._drain()
         self.send_response(status)
@@ -299,16 +307,15 @@ class _Handler(BaseHTTPRequestHandler):
         needed = next((role for prefix, role in _ROLES if path.startswith(prefix)), "viewer")
         if path.endswith("/evidence.zip"):
             needed = "auditor"
+        self._access_pending = (viewer.user.email, self.path, self._client_ip())
         if not viewer.user.can(needed):
-            auth.log(viewer.user.email, "GET", self.path, 403, self._client_ip())
             token = web.current_viewer.set(viewer)
             try:
                 self._send_page(403, web.message_page("Not allowed", f"This page needs the {needed} role."))
             finally:
                 web.current_viewer.reset(token)
             return
-        status = self._render(path, query, viewer=viewer)
-        auth.log(viewer.user.email, "GET", self.path, status, self._client_ip())
+        self._render(path, query, viewer=viewer)
 
     def _render(self, path: str, query: dict[str, str], viewer: Any) -> int:
         """Draw one dashboard page for ``viewer``. Returns the status sent."""
