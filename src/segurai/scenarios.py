@@ -202,52 +202,72 @@ class SuiteReport:
         return "\n".join(lines)
 
 
-def run_scenarios(scenarios: list[Scenario]) -> SuiteReport:
+def run_scenarios(scenarios: list[Scenario], passes: int = 6) -> SuiteReport:
     """Run every scenario in its own fresh in-memory store, in OBSERVE mode.
 
     OBSERVE mode is used so every action in a scenario is evaluated, even
     after an earlier one was flagged. The runtime's previous settings are
     restored afterwards.
+
+    Correctness comes from the first pass. Timing comes from the passes after
+    it: the first warms up imports and caches, and pooling several passes
+    gives the 99th percentile enough samples that one pause on a busy
+    machine (a garbage collection, a CI neighbour) can't decide it alone -
+    while a real slowdown, which shows up in every pass, still does.
     """
     saved = (_rt.store, _rt.authority, _rt.mode)
     results: list[ScenarioResult] = []
     act_latency: list[float] = []
     check_latency: list[float] = []
+    passes = max(1, passes)
     try:
-        for sc in scenarios:
-            configure(store=":memory:", authority=Authority(), mode=Mode.OBSERVE)
-            records = []
-            with session(principal=sc.principal, request=sc.request or sc.id, scope=sc.scope):
-                for step in sc.steps:
-                    with ExitStack() as hops:
-                        for hop in step.path:
-                            hops.enter_context(delegate(hop.holder, scope=hop.scope))
-                        for planned in step.actions:
-                            for _ in range(planned.repeat):
-                                started = time.perf_counter_ns()
-                                record = act(planned.operation, planned.resource, planned.scale,
-                                             planned.irreversible, **planned.evidence)
-                                act_latency.append((time.perf_counter_ns() - started) / 1000)
-                                records.append(record)
-
-                                # The check on its own, without storage: the part
-                                # of the cost that belongs to Tier 1 itself.
-                                scope = current_warrant().scope
-                                started = time.perf_counter_ns()
-                                scope.evaluate(planned.operation, planned.resource, planned.scale,
-                                               planned.irreversible, evidence=planned.evidence)
-                                check_latency.append((time.perf_counter_ns() - started) / 1000)
-
-            fired = sorted({f.check for r in records for f in r.findings if f.status == "fail"})
-            unverifiable = sum(1 for r in records for f in r.findings if f.status == "unverifiable")
-            if sc.kind == "violating":
-                correct = bool(set(fired) & set(sc.expect))
-                note = "" if correct else (f"flagged for {fired}, not {list(sc.expect)}" if fired else "not flagged")
-            else:
-                correct = not fired
-                note = "" if correct else f"false positive: {fired}"
-            results.append(ScenarioResult(sc.id, sc.kind, sc.expect, fired, unverifiable,
-                                          len(records), correct, note))
+        for pass_number in range(passes):
+            timed = pass_number > 0 or passes == 1
+            first = pass_number == 0
+            _run_pass(scenarios, results if first else None,
+                      act_latency if timed else None, check_latency if timed else None)
     finally:
         _rt.store, _rt.authority, _rt.mode = saved
     return SuiteReport(results, act_latency, check_latency)
+
+
+def _run_pass(scenarios: list[Scenario], results: list[ScenarioResult] | None,
+              act_latency: list[float] | None, check_latency: list[float] | None) -> None:
+    """One pass over every scenario; fills whichever of the lists it is given."""
+    act_latency = act_latency if act_latency is not None else []
+    check_latency = check_latency if check_latency is not None else []
+    for sc in scenarios:
+        configure(store=":memory:", authority=Authority(), mode=Mode.OBSERVE)
+        records = []
+        with session(principal=sc.principal, request=sc.request or sc.id, scope=sc.scope):
+            for step in sc.steps:
+                with ExitStack() as hops:
+                    for hop in step.path:
+                        hops.enter_context(delegate(hop.holder, scope=hop.scope))
+                    for planned in step.actions:
+                        for _ in range(planned.repeat):
+                            started = time.perf_counter_ns()
+                            record = act(planned.operation, planned.resource, planned.scale,
+                                         planned.irreversible, **planned.evidence)
+                            act_latency.append((time.perf_counter_ns() - started) / 1000)
+                            records.append(record)
+
+                            # The check on its own, without storage: the part
+                            # of the cost that belongs to Tier 1 itself.
+                            scope = current_warrant().scope
+                            started = time.perf_counter_ns()
+                            scope.evaluate(planned.operation, planned.resource, planned.scale,
+                                           planned.irreversible, evidence=planned.evidence)
+                            check_latency.append((time.perf_counter_ns() - started) / 1000)
+
+        fired = sorted({f.check for r in records for f in r.findings if f.status == "fail"})
+        unverifiable = sum(1 for r in records for f in r.findings if f.status == "unverifiable")
+        if sc.kind == "violating":
+            correct = bool(set(fired) & set(sc.expect))
+            note = "" if correct else (f"flagged for {fired}, not {list(sc.expect)}" if fired else "not flagged")
+        else:
+            correct = not fired
+            note = "" if correct else f"false positive: {fired}"
+        if results is not None:
+            results.append(ScenarioResult(sc.id, sc.kind, sc.expect, fired, unverifiable,
+                                          len(records), correct, note))
