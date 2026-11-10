@@ -18,7 +18,14 @@ What is real and what is not, because a demo should never blur that:
 The scenarios are chosen so that each one shows one thing a buyer or an
 engineer will ask about: a clean job, the incident, a blocked action, a
 prompt injection, a judgement call, missing evidence, standing permissions
-nobody uses, and agents seen through plain OpenTelemetry with no code change.
+nobody uses, agents seen through plain OpenTelemetry with no code change, a
+company rule that outranks a manager's grant, and a request whose author is
+proven by the company's login system, served by an agent that can reach the
+CRM only through the gateway.
+
+That last scene needs a login system and a CRM. The demo runs both as tiny
+servers on 127.0.0.1, only while it builds, so the ID token is really signed
+and verified and the gateway really stands between the agent and the CRM.
 """
 
 from __future__ import annotations
@@ -34,7 +41,8 @@ from .collector.otlp import ingest
 from .collector.store import Store
 from .judge.judge import Verdict
 from .models import Check, Scope
-from .runtime import Mode, ViolationError, act, agent, configure, session
+from .policy import Policy, Rule
+from .runtime import Mode, ViolationError, act, agent, configure, resume, session
 
 __all__ = ["DEMO_DIR", "DemoSummary", "seed", "tamper", "cover_up", "demo_paths"]
 
@@ -100,6 +108,83 @@ def _judge(store: Store, session_id: str, action_id: str, verdict: str, confiden
 
 def _flagged(store: Store, session_id: str) -> list:
     return [a for a in store.actions_for_session(session_id) if not a.allowed]
+
+
+#: Acme's own rules, which no request can override (policy.py).
+ACME_RULES = Policy(rules=(
+    Rule(name="nobody deletes payroll", effect="deny", operations=("delete",), targets=("hr.payroll",),
+         reason="payroll changes go through the payroll system, with two approvals"),
+))
+
+
+class _Outside:
+    """Acme's login system and its CRM, as two tiny servers on this machine.
+
+    They listen on 127.0.0.1, on spare ports, only while the demo is built.
+    The login system signs ID tokens with a key made for this run, exactly
+    as a real one would; the CRM just answers and remembers what reached it.
+    """
+
+    def __init__(self) -> None:
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        import jwt
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwk = dict(json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(self._key.public_key())), kid="acme-1", use="sig")
+        self.crm_seen: list[tuple[str, str]] = []
+        outside = self
+
+        class _Quiet(BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def _reply(self, body: Any) -> None:
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        class LoginSystem(_Quiet):
+            def do_GET(self) -> None:
+                if self.path == "/.well-known/openid-configuration":
+                    self._reply({"issuer": outside.issuer, "jwks_uri": outside.issuer + "/keys"})
+                else:
+                    self._reply({"keys": [jwk]})
+
+        class CRM(_Quiet):
+            def _any(self) -> None:
+                outside.crm_seen.append((self.command, self.path))
+                self._reply({"ok": True})
+
+            do_GET = do_POST = do_DELETE = _any
+
+        self._servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in (LoginSystem, CRM)]
+        for server in self._servers:
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+        self.issuer = f"http://127.0.0.1:{self._servers[0].server_address[1]}"
+        self.crm_url = f"http://127.0.0.1:{self._servers[1].server_address[1]}"
+
+    def id_token(self, email: str, groups: list[str]) -> str:
+        """What Acme's login system hands an app after the person signs in."""
+        import time
+
+        import jwt
+
+        now = int(time.time())
+        return jwt.encode({"iss": self.issuer, "aud": "segurai-agents", "sub": email, "email": email,
+                           "email_verified": True, "groups": groups, "iat": now, "exp": now + 300},
+                          self._key, algorithm="RS256", headers={"kid": "acme-1"})
+
+    def close(self) -> None:
+        for server in self._servers:
+            server.shutdown()
+            server.server_close()
 
 
 # ---- the scenarios ----------------------------------------------------------------
@@ -307,6 +392,92 @@ def _blocked_refund(store: Store) -> str:
     return s.session_id
 
 
+def _company_rule(store: Store) -> str:
+    """A manager's grant can't outrank the company's own rules."""
+    scope = Scope.of(
+        operations=["read", "search", "delete"], targets=["hr.*"],      # Dana's grant allows deletes
+        max_scale=10, irreversible_allowed=True,
+    )
+    contract = _contract("Remove duplicate payroll entries for contractors who have left",
+                         ["search", "delete"], ["hr.payroll"], 10,
+                         ["only duplicate entries", "only contractors who have left"], irreversible=True)
+
+    @agent("hr_agent")
+    def hr_agent() -> None:
+        act("search", "hr.payroll", scale=214)
+        try:
+            act("delete", "hr.payroll", scale=3, irreversible=True)
+        except ViolationError:
+            pass                                         # stopped by the company rule
+
+    configure(mode=Mode.ENFORCE)
+    try:
+        with session(principal=_person("dana"),
+                     request="Remove the duplicate payroll entries for the contractors who left",
+                     scope=scope, contract=contract) as s:
+            hr_agent()
+    finally:
+        configure(mode=Mode.OBSERVE)
+    (flag,) = _flagged(store, s.session_id)
+    _judge(store, s.session_id, flag.action_id, "within_intent", "high",
+           "Dana asked for exactly this, and the agent stayed within it: three duplicate entries. "
+           "It was stopped by Acme's rule that payroll changes go through the payroll system, not "
+           "because the agent overstepped. The next step is for Dana to raise it with payroll.",
+           clause="remove the duplicate payroll entries")
+    return s.session_id
+
+
+def _verified_request(store: Store, authority: Any, outside: _Outside) -> str:
+    """Who asked, proven - and an agent that can reach the CRM only through the gateway."""
+    import threading
+
+    from .gateway import GatewayClient, GatewayConfig, GatewayServer, Route, Upstream
+    from .identity import IdentityVerifier, TrustedIssuer
+    from .issuer import Ceiling, Issuer
+
+    # Priya signs in to Acme's login system; the app passes her ID token to
+    # Segurai's issuer, which checks it and grants no more than her group may have.
+    issuer = Issuer(authority, store,
+                    IdentityVerifier([TrustedIssuer(issuer=outside.issuer, audience="segurai-agents",
+                                                    allowed_domains=(ORG,))]),
+                    [Ceiling(name="sales", groups=("sales",),
+                             scope=Scope.of(operations=["read", "search", "archive"], targets=["crm.*"],
+                                            max_scale=50))])
+    issued = issuer.issue(outside.id_token(_person("priya"), ["sales"]),
+                          {"request": "Archive the deals that went quiet last quarter"})
+
+    # The CRM is reachable only through the gateway, which holds the CRM's
+    # credential and checks every request against the agent's warrant first.
+    crm = Upstream(name="crm", prefix="/crm", url=outside.crm_url, routes=(
+        Route(method="GET", path="/opportunities/{id}", operation="read", resource="crm.opportunities"),
+        Route(method="POST", path="/opportunities/{id}/archive", operation="archive",
+              resource="crm.opportunities"),
+        Route(method="DELETE", path="/opportunities/{id}", operation="delete", resource="crm.opportunities",
+              irreversible=True),
+    ))
+    gateway = GatewayServer(("127.0.0.1", 0), GatewayConfig(upstreams=(crm,)), store, authority, policy=ACME_RULES)
+    thread = threading.Thread(target=gateway.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        with resume(issued["chain_token"], holder="crm_agent"):
+            client = GatewayClient(f"http://127.0.0.1:{gateway.server_address[1]}")
+            client.request("GET", "/crm/opportunities/4471")
+            client.request("POST", "/crm/opportunities/4471/archive")
+            refused, _, _ = client.request("DELETE", "/crm/opportunities/4502")
+    finally:
+        gateway.shutdown()
+        gateway.server_close()
+        thread.join(timeout=5)
+    if refused != 403 or ("DELETE", "/opportunities/4502") in outside.crm_seen:
+        raise RuntimeError("demo: the gateway should have refused the delete before it reached the CRM")
+    (flag,) = _flagged(store, issued["session_id"])
+    _judge(store, issued["session_id"], flag.action_id, "outside_intent", "high",
+           "Priya asked to archive quiet deals. Deleting one permanently was never part of that, and "
+           "her group can't be granted deletes at all. The gateway refused it before the CRM saw it.",
+           clause="archive, not delete")
+    return issued["session_id"]
+
+
 def _incident(store: Store) -> str:
     """The story the product exists for: 400 deals deleted, and who said so."""
     scope = Scope.of(
@@ -355,10 +526,12 @@ def seed(folder: str | Path = DEMO_DIR) -> DemoSummary:
 
     # Whatever the runtime was pointed at before, put it back afterwards:
     # the demo must not leave a caller's process writing to the demo file.
-    before = (_runtime_module._rt.store, _runtime_module._rt.authority, _runtime_module._rt.mode)
-    configure(store=str(db))            # creates demo.key / demo.pub beside the database
-    store = _runtime_module._rt.store
-    authority = _runtime_module._rt.authority
+    rt = _runtime_module._rt
+    before = (rt.store, rt.authority, rt.mode, rt.policy)
+    configure(store=str(db), policy=ACME_RULES)   # creates demo.key / demo.pub beside the database
+    store = rt.store
+    authority = rt.authority
+    outside = _Outside()
     try:
         _observed_trace(store)
         _routine_support(store)
@@ -367,6 +540,8 @@ def seed(folder: str | Path = DEMO_DIR) -> DemoSummary:
         _judgement_call(store)
         _prompt_injection(store)
         _blocked_refund(store)
+        _company_rule(store)
+        _verified_request(store, authority, outside)
         incident = _incident(store)
         store.put_checkpoint(authority)
 
@@ -379,7 +554,8 @@ def seed(folder: str | Path = DEMO_DIR) -> DemoSummary:
             incident_action=incident_action.action_id,
         )
     finally:
-        _runtime_module._rt.store, _runtime_module._rt.authority, _runtime_module._rt.mode = before
+        outside.close()
+        rt.store, rt.authority, rt.mode, rt.policy = before
         # Close the demo's own connection: on Windows an open SQLite file
         # cannot be deleted, so the next `segurai demo` couldn't rebuild it.
         store.close()

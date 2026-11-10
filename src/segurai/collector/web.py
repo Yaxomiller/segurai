@@ -565,6 +565,12 @@ def _action_html(a: ActionRecord, verdict: Any = None) -> str:
         cls, label = "fail", "FAIL"
     unk = a.allowed and any(f.status == "unverifiable" for f in a.findings)
     extra = " &middot; irreversible" if a.irreversible else ""
+    detail = a.detail or {}
+    if detail.get("via") == "gateway":
+        # Said plainly: this request went through the gateway, which is where
+        # it was checked - before the system behind it saw anything.
+        extra += (f" &middot; via the gateway: {_e(detail.get('method', ''))} "
+                  f"/{_e(detail.get('upstream', ''))}{_e(detail.get('path', ''))}")
     out = [f"<div class='action {('unk' if unk else cls) if cls != 'ok' or unk else ''}'>"
            f"<span class='badge {cls}'>{label}</span>"
            f"<span class='mono'>{_e(a.operation)} {_e(a.resource)}</span> "
@@ -638,6 +644,10 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
                     "but not checked, and nothing here is signed.</p><p class='muted small'>This is "
                     "the zero-integration path: point an existing OpenTelemetry exporter at the "
                     "collector and the agent chain appears, with no code changes.</p></div>")
+    elif isinstance(sess.contract, dict) and sess.contract.get("issued_under"):
+        left.append("<div class='card'><h2>Contract</h2><p class='muted'>None compiled. The issuer "
+                    f"granted this scope from the <strong>{_e(sess.contract['issued_under'])}</strong> "
+                    "ceiling: the most anyone in that group can ever be given.</p></div>")
     else:
         left.append("<div class='card'><h2>Contract</h2><p class='muted'>None - the scope was "
                     "written by hand rather than compiled from the request.</p></div>")

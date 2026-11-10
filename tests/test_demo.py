@@ -26,8 +26,8 @@ def _by_request(store, prefix):
 
 def test_the_demo_company_is_built_from_real_records(tmp_path):
     summary, store, verifier = _seed(tmp_path)
-    assert summary.sessions == 10 and summary.actions == 25
-    assert summary.flagged == 3 and summary.blocked == 1
+    assert summary.sessions == 12 and summary.actions == 30
+    assert summary.flagged == 3 and summary.blocked == 3
     report = store.audit(verifier)
     assert report.ok and report.checkpoints == 1 and report.checkpoints_verified == 1
 
@@ -55,6 +55,24 @@ def test_each_scenario_shows_what_it_is_there_to_show(tmp_path):
     assert all(a.allowed for a in store.actions_for_session(_by_request(store, "Archive our").session_id))
     assert _by_request(store, "(observed").contract["observed"] is True
 
+    payroll = store.actions_for_session(_by_request(store, "Remove the duplicate payroll").session_id)
+    (ruled,) = [a for a in payroll if a.blocked]                       # the grant allowed it...
+    assert {f.check for f in ruled.findings if f.status == "fail"} == {"policy"}   # ...the company didn't
+
+
+def test_the_verified_request_goes_through_the_login_system_and_the_gateway(tmp_path):
+    _, store, verifier = _seed(tmp_path)
+    priya = _by_request(store, "Archive the deals that went quiet")
+    assert priya.verified and priya.identity["groups"] == ["sales"]       # proven by the ID token
+    assert priya.contract == {"issued_under": "sales"}                     # granted inside the ceiling
+    actions = store.actions_for_session(priya.session_id)
+    assert [(a.operation, a.blocked, a.detail["via"]) for a in actions] == [
+        ("read", False, "gateway"), ("archive", False, "gateway"), ("delete", True, "gateway")]
+    assert sum(s.verified for s in store.sessions(limit=50)) == 1          # everyone else only claimed
+    page = session_page(store, priya.session_id, verifier)
+    assert "identity verified" in page and "via the gateway: DELETE /crm/opportunities/4502" in page
+    assert "granted this scope from the <strong>sales</strong> ceiling" in page
+
 
 def test_samples_are_labelled_as_samples(tmp_path):
     _, store, verifier = _seed(tmp_path)
@@ -65,10 +83,10 @@ def test_samples_are_labelled_as_samples(tmp_path):
 
 
 def test_seeding_leaves_the_callers_runtime_alone(tmp_path):
-    before = segurai._runtime.store
+    before = (segurai._runtime.store, segurai._runtime.policy)
     demo.seed(tmp_path / "demo")
     demo.seed(tmp_path / "demo")                  # twice: the file must not stay locked
-    assert segurai._runtime.store is before
+    assert (segurai._runtime.store, segurai._runtime.policy) == before
 
 
 # ---- the pages ---------------------------------------------------------------
@@ -142,7 +160,7 @@ def test_demo_commands(tmp_path, capsys):
 
     assert cli_main(["demo", "--dir", folder, "--no-serve"]) == 0
     out = capsys.readouterr().out
-    assert "10 requests, 25 agent actions" in out and "segurai demo tamper" in out
+    assert "12 requests, 30 agent actions" in out and "segurai demo tamper" in out
 
     assert cli_main(["demo", "tamper", "--dir", folder]) == 0
     assert "harmless 4-record" in capsys.readouterr().out

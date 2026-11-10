@@ -25,10 +25,13 @@ classifiers = [
 ]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-# The core needs only a signing library. Everything else is an optional extra,
+# The core needs a signing library and PyJWT. Everything else is an optional extra,
 # so trying Segurai never drags a framework into someone's environment.
 dependencies = [
     "cryptography>=42.0",
+    # Checking who asked (an ID token from the company's login system) is
+    # part of the core promise, and PyJWT is small and pure Python.
+    "pyjwt[crypto]>=2.8",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
