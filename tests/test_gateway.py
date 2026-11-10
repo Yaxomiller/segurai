@@ -265,8 +265,8 @@ def test_a_widened_chain_is_refused_even_when_validly_signed(crm, gateway, org):
     with segurai.session(principal="p", request="r", scope=Scope.of(operations=["read"], targets=["crm.x"])) as s:
         root = s.root_warrant
         holder = org.holder_private_key(root.warrant_id)
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     leaf_key = Ed25519PrivateKey.generate()
     wider = segurai.Warrant(
         warrant_id="wrt_wide", session_id=root.session_id, root_principal="p", holder="rogue",
