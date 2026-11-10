@@ -24,12 +24,14 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - Python 3.10
     import tomli as tomllib
 
+from .collector.db import is_database_url, redact_url
 from .models import Scope
 from .policy import Policy, PolicyError
 
@@ -148,7 +150,7 @@ class Config:
 
     def summary(self) -> list[str]:
         s = self.server
-        lines = [f"database        : {s.database}",
+        lines = [f"database        : {redact_url(s.database)}",
                  f"organisation key: {s.key}",
                  f"dashboard       : http://{s.host}:{s.port}/" + (f" (public: {s.public_url})" if s.public_url else "")]
         if self.dashboard:
@@ -192,7 +194,22 @@ def _scope(t: _Table) -> Scope:
 
 def _server(t: _Table, base: Path) -> ServerConfig:
     database = t.get("database", str, "segurai.db")
-    if "://" not in database:
+    database_env = t.get("database_env", str, "")
+    if database_env:
+        # A PostgreSQL URL usually carries a password, so it comes from the
+        # environment like every other secret.
+        database = os.environ.get(database_env, "")
+        if not database:
+            raise ConfigError(f"server.database_env: {database_env} is not set")
+        if "database" in t.data:
+            raise ConfigError("server: give database or database_env, not both")
+    if "://" in database:
+        if not is_database_url(database):
+            raise ConfigError("server.database must be a file path or a postgresql:// URL")
+        if not database_env and urlsplit(database).password:
+            raise ConfigError("server.database: this URL contains a password. Put the URL in an "
+                              "environment variable and name it with database_env instead.")
+    else:
         database = str(_path(base, database))
     tokens = tuple(os.environ.get(name, "") for name in t.strings("ingest_tokens_env"))
     missing = [n for n, v in zip(t.strings("ingest_tokens_env"), tokens, strict=True) if not v]
@@ -432,7 +449,8 @@ EXAMPLE = '''# Segurai configuration. Secrets never go in this file: name the en
 #   segurai serve        --config segurai.toml
 
 [server]
-database = "segurai.db"                 # or postgresql://user@host/db
+database = "segurai.db"                 # a SQLite file, or postgresql://user@host/db
+# database_env = "SEGURAI_DATABASE_URL" # or: the variable holding a PostgreSQL URL with its password
 key = "segurai.key"                     # the organisation's PRIVATE key; created if missing
 host = "127.0.0.1"                      # put a TLS reverse proxy in front for anything wider
 port = 8700

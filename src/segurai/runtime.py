@@ -50,6 +50,7 @@ from typing import Any, Callable, ContextManager, Iterator, Mapping, TypeVar
 
 from .actions import ActionSpec, ActionSpecError
 from .authority import DEFAULT_TTL, Authority
+from .collector.db import is_database_url
 from .collector.store import Store
 from .context import bind_warrant, current_warrant, import_chain
 from .models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
@@ -222,6 +223,8 @@ def configure(
     if isinstance(store, (str, Path)):
         path = str(store)
         if authority is None and key is None and path != ":memory:":
+            if is_database_url(path):
+                raise ValueError("with a PostgreSQL store, pass key= (the signing-key file) or authority=")
             key = Path(path).with_suffix(".key")
         store = Store(path)
     if key is not None and authority is None:

@@ -1,9 +1,10 @@
 """Storage.
 
-SQLite, deliberately. At this stage the entire dataset fits in a file, and a
-file you can open with any tool beats infrastructure you have to run. The
-schema is kept close to what a columnar store would want, so the eventual move
-to Postgres and then ClickHouse is a port rather than a redesign.
+SQLite by default: a pilot's whole dataset fits in a file, and a file you can
+open with any tool beats infrastructure you have to run. Give a
+``postgresql://`` URL instead and the same store runs on PostgreSQL, for
+several servers sharing one database and the backups a company already
+manages. The SQL is written once; db.py smooths over the differences.
 
 The tables:
     sessions    - one row per human request
@@ -22,16 +23,18 @@ and :meth:`Store.audit` for the check.
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
+from .db import open_database
 from .ledger import (
     GENESIS,
+    HIDDEN_COLUMNS,
     LOGGED_KINDS,
     AuditProblem,
     AuditReport,
@@ -272,52 +275,95 @@ class SessionRow:
 
 
 class Store:
-    """A SQLite-backed store. Pass ``":memory:"`` for tests."""
+    """The evidence store.
+
+    ``path`` is a SQLite file, ``":memory:"`` (for tests), or a
+    ``postgresql://`` URL (needs ``pip install 'segurai[postgres]'``).
+    """
 
     def __init__(self, path: str | Path = "segurai.db"):
-        self.path = str(path)
-        # check_same_thread=False lets one store serve an agent whose steps run
-        # on a thread pool (LangGraph does this for parallel branches). The
-        # lock makes each write-and-commit atomic across those threads.
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._db = open_database(str(path))
+        #: Where the data lives, safe to print: a PostgreSQL password is masked.
+        self.path = self._db.where
+        # One connection, shared by every thread that records (LangGraph runs
+        # parallel branches on a pool); the lock gives each transaction the
+        # connection to itself.
         self._lock = threading.RLock()
-        with self._lock:
-            self._conn.executescript(_SCHEMA)
+        self._depth = 0
+        with self._tx():
+            self._db.script(_SCHEMA)
             self._migrate()
-            self._conn.commit()
-            # Each logged table's columns, for writes that replace a whole row.
+            self._db.prepare()
+        # Each logged table's columns, for writes that replace a whole row.
+        # Hidden bookkeeping columns are the database's, never the record's.
+        with self._lock:
             self._columns = {
-                table: [r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")]
+                table: [c for c in self._db.columns(table) if c not in HIDDEN_COLUMNS]
                 for table, _ in _LOGGED_TABLES.values()
             }
+            self._db.end_read()
+
+    @property
+    def dialect(self) -> str:
+        """"sqlite" or "postgres"."""
+        return self._db.dialect
+
+    @property
+    def _conn(self) -> Any:
+        # Direct SQL, for tests that tamper with the database the way an
+        # insider would. Takes the store's own ``?`` SQL on either database.
+        return self._db
 
     def _migrate(self) -> None:
         for table, column, sql_type in _ADDED_COLUMNS:
-            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
-            if column not in existing:
-                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+            if column not in self._db.columns(table):
+                self._db.add_column(table, column, sql_type)
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._db.close()
 
     def backup(self, path: str | Path) -> None:
         """Copy the whole database to ``path``, safely, even while it is being written.
 
-        Uses SQLite's online backup, which copies a consistent snapshot.
-        Copying the file directly can catch a write half-way through.
+        SQLite only: it uses SQLite's online backup, which copies a consistent
+        snapshot (copying the file directly can catch a write half-way
+        through). For PostgreSQL, use pg_dump or managed backups.
         """
-        target = sqlite3.connect(str(path))
-        try:
-            with self._lock:
-                self._conn.backup(target)
-        finally:
-            target.close()
-
-    def _write(self, sql: str, params: tuple) -> None:
         with self._lock:
-            self._conn.execute(sql, params)
-            self._conn.commit()
+            self._db.backup(str(path))
+
+    @contextmanager
+    def _tx(self) -> Iterator[None]:
+        """One write: every statement in it commits together, or none does.
+
+        Without this, a write that failed half-way would leave its first
+        statements pending, to be committed by whatever wrote next - a
+        record without its log entry, which an audit would call tampering.
+        """
+        with self._lock:
+            if self._depth:                       # already inside a write: join it
+                self._depth += 1
+                try:
+                    yield
+                finally:
+                    self._depth -= 1
+                return
+            self._depth = 1
+            self._db.begin()
+            try:
+                yield
+            except BaseException:
+                self._db.rollback()
+                raise
+            else:
+                self._db.commit()
+            finally:
+                self._depth = 0
+
+    def _write(self, sql: str, params: tuple) -> Any:
+        with self._tx():
+            return self._db.execute(sql, params)
 
     # ---- writing evidence, and logging it -------------------------------
 
@@ -338,13 +384,13 @@ class Store:
         sql = (f"INSERT INTO {table} ({', '.join(columns)}) "
                f"VALUES ({', '.join('?' for _ in columns)}) "
                f"ON CONFLICT ({key}) DO UPDATE SET {updates}")
-        with self._lock:
-            self._conn.execute(sql, tuple(values[c] for c in columns))
+        with self._tx():
+            self._db.lock_ledger()                 # before anything else, so writers take turns
+            self._db.execute(sql, tuple(values[c] for c in columns))
             self._append_entry(kind, ref_id, row_payload(values))
-            self._conn.commit()
 
     def _append_entry(self, kind: str, ref_id: str, payload: dict[str, Any]) -> None:
-        """Append one entry. Caller holds the lock and commits.
+        """Append one entry. Caller is inside a write (``_tx``) holding the ledger lock.
 
         Writing the identical record twice appends nothing: the collector
         re-ingests the same spans whenever a trace arrives in pieces, and
@@ -353,18 +399,18 @@ class Store:
         is, because the log only ever grows.
         """
         body = payload_hash(payload)
-        latest = self._conn.execute(
+        latest = self._db.execute(
             "SELECT payload_hash FROM ledger WHERE kind = ? AND ref_id = ? "
             "ORDER BY seq DESC LIMIT 1", (kind, ref_id)).fetchone()
         if latest is not None and latest["payload_hash"] == body:
             return
 
-        head = self._conn.execute(
+        head = self._db.execute(
             "SELECT seq, entry_hash FROM ledger ORDER BY seq DESC LIMIT 1").fetchone()
         seq = (head["seq"] + 1) if head is not None else 1
         prev = head["entry_hash"] if head is not None else GENESIS
         at = utcnow().isoformat()
-        self._conn.execute(
+        self._db.execute(
             "INSERT INTO ledger VALUES (?,?,?,?,?,?,?)",
             (seq, at, kind, ref_id, body, prev, entry_hash(seq, prev, kind, ref_id, body, at)),
         )
@@ -378,17 +424,14 @@ class Store:
                             payload_hash=r["payload_hash"], prev_hash=r["prev_hash"],
                             entry_hash=r["entry_hash"]) for r in rows]
 
-    def change_marker(self) -> tuple[int, int]:
+    def change_marker(self) -> tuple[Any, ...] | None:
         """Changes whenever the database does - through this connection or any other.
 
-        ``data_version`` moves when ANOTHER connection commits to the file;
-        ``total_changes`` counts every row this connection changed, including
-        by direct SQL. Together they let a cache prove nothing changed, rather
-        than assume it.
+        Lets a cache prove nothing changed, rather than assume it. None means
+        the database can't tell, and nothing should be cached.
         """
         with self._lock:
-            version = self._conn.execute("PRAGMA data_version").fetchone()[0]
-            return int(version), int(self._conn.total_changes)
+            return self._db.change_marker()
 
     def ledger_head(self) -> tuple[int, str]:
         """The newest entry's sequence number and hash; (0, GENESIS) when empty."""
@@ -417,7 +460,9 @@ class Store:
         checkpoint = Checkpoint(seq=seq, head=head, created_at=utcnow(), key_id=authority.key_id)
         checkpoint = replace(checkpoint, signature=authority.sign_bytes(checkpoint.signing_bytes()))
         self._write(
-            "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
+            "INSERT INTO checkpoints VALUES (?,?,?,?,?) ON CONFLICT (seq) DO UPDATE SET "
+            "head = excluded.head, created_at = excluded.created_at, key_id = excluded.key_id, "
+            "signature = excluded.signature",
             (checkpoint.seq, checkpoint.head, checkpoint.created_at.isoformat(),
              checkpoint.key_id, checkpoint.signature),
         )
@@ -554,9 +599,12 @@ class Store:
             report.witnessed_verified += 1
         return report
 
-    def _read(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+    def _read(self, sql: str, params: tuple = ()) -> list[Any]:
         with self._lock:
-            return self._conn.execute(sql, params).fetchall()
+            rows = self._db.execute(sql, params).fetchall()
+            if not self._depth:
+                self._db.end_read()
+            return rows
 
     # ---- sessions ----------------------------------------------------
 
@@ -760,12 +808,11 @@ class Store:
 
     def put_web_session(self, token_hash: str, email: str, csrf: str, expires_at: datetime, ip: str) -> None:
         now = utcnow().isoformat()
-        with self._lock:
+        with self._tx():
             # Expired sessions are swept whenever a new one starts.
-            self._conn.execute("DELETE FROM web_sessions WHERE expires_at <= ?", (now,))
-            self._conn.execute("INSERT INTO web_sessions VALUES (?, ?, ?, ?, ?, ?)",
-                               (token_hash, email, csrf, now, expires_at.isoformat(), ip))
-            self._conn.commit()
+            self._db.execute("DELETE FROM web_sessions WHERE expires_at <= ?", (now,))
+            self._db.execute("INSERT INTO web_sessions VALUES (?, ?, ?, ?, ?, ?)",
+                             (token_hash, email, csrf, now, expires_at.isoformat(), ip))
 
     def get_web_session(self, token_hash: str) -> dict | None:
         rows = self._read("SELECT * FROM web_sessions WHERE token_hash = ?", (token_hash,))
@@ -779,21 +826,24 @@ class Store:
 
     def put_oidc_pending(self, state: str, nonce: str, verifier: str, next_path: str, binding: str) -> None:
         cutoff = (utcnow() - timedelta(minutes=10)).isoformat()
-        with self._lock:
-            self._conn.execute("DELETE FROM oidc_pending WHERE created_at < ?", (cutoff,))
-            self._conn.execute("INSERT INTO oidc_pending VALUES (?, ?, ?, ?, ?, ?)",
-                               (state, nonce, verifier, next_path, binding, utcnow().isoformat()))
-            self._conn.commit()
+        with self._tx():
+            self._db.execute("DELETE FROM oidc_pending WHERE created_at < ?", (cutoff,))
+            self._db.execute("INSERT INTO oidc_pending VALUES (?, ?, ?, ?, ?, ?)",
+                             (state, nonce, verifier, next_path, binding, utcnow().isoformat()))
 
     def take_oidc_pending(self, state: str) -> dict | None:
-        """The sign-in started with ``state``, removed as it is read: it can't be used twice."""
+        """The sign-in started with ``state``, removed as it is read: it can't be used twice.
+
+        Only the caller whose DELETE removed the row gets it. With several
+        servers on one database, two racing to finish the same sign-in can
+        both read it, but only one can delete it.
+        """
         cutoff = (utcnow() - timedelta(minutes=10)).isoformat()
-        with self._lock:
-            rows = self._conn.execute("SELECT * FROM oidc_pending WHERE state = ? AND created_at >= ?",
-                                      (state, cutoff)).fetchall()
-            self._conn.execute("DELETE FROM oidc_pending WHERE state = ?", (state,))
-            self._conn.commit()
-        return dict(rows[0]) if rows else None
+        with self._tx():
+            rows = self._db.execute("SELECT * FROM oidc_pending WHERE state = ? AND created_at >= ?",
+                                    (state, cutoff)).fetchall()
+            taken = self._db.execute("DELETE FROM oidc_pending WHERE state = ?", (state,)).rowcount
+        return dict(rows[0]) if rows and taken == 1 else None
 
     def put_access(self, access_id: str, email: str, method: str, path: str, status: int, ip: str) -> None:
         self._write_row("access_log", {
@@ -843,13 +893,11 @@ class Store:
     def queue_alert(self, kind: str, ref: str, channel: str, body: dict) -> int:
         """Queue one alert; 1 if queued, 0 if that exact alert was queued before."""
         now = utcnow().isoformat()
-        with self._lock:
-            cursor = self._conn.execute(
-                "INSERT INTO alerts (kind, ref, channel, body_json, created_at, next_attempt_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, ref, channel) DO NOTHING",
-                (kind, ref, channel, json.dumps(body), now, now))
-            self._conn.commit()
-            return cursor.rowcount
+        cursor = self._write(
+            "INSERT INTO alerts (kind, ref, channel, body_json, created_at, next_attempt_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, ref, channel) DO NOTHING",
+            (kind, ref, channel, json.dumps(body), now, now))
+        return cursor.rowcount
 
     def due_alerts(self, limit: int = 50) -> list[dict]:
         rows = self._read(
@@ -940,7 +988,9 @@ class Store:
     def put_observed_span(self, trace_id: str, span_id: str, parent_span_id: str | None,
                           name: str, started_at: datetime, attributes: dict) -> None:
         self._write(
-            "INSERT OR REPLACE INTO observed_spans VALUES (?,?,?,?,?,?)",
+            "INSERT INTO observed_spans VALUES (?,?,?,?,?,?) ON CONFLICT (span_id) DO UPDATE SET "
+            "trace_id = excluded.trace_id, parent_span_id = excluded.parent_span_id, name = excluded.name, "
+            "started_at = excluded.started_at, attributes_json = excluded.attributes_json",
             (span_id, trace_id, parent_span_id, name, started_at.isoformat(),
              json.dumps(attributes, sort_keys=True, default=str)),
         )
@@ -954,17 +1004,16 @@ class Store:
                  "attributes": json.loads(r["attributes_json"])} for r in rows]
 
     def mark_warrant_trace(self, trace_id: str) -> None:
-        self._write("INSERT OR IGNORE INTO warrant_traces VALUES (?)", (trace_id,))
+        self._write("INSERT INTO warrant_traces VALUES (?) ON CONFLICT (trace_id) DO NOTHING", (trace_id,))
 
     def is_warrant_trace(self, trace_id: str) -> bool:
         return bool(self._read("SELECT 1 FROM warrant_traces WHERE trace_id = ?", (trace_id,)))
 
     def forget_session(self, session_id: str) -> None:
         """Remove a session with its warrants and actions (used to replace an observed chain)."""
-        with self._lock:
+        with self._tx():
             for table in ("actions", "warrants", "sessions"):
-                self._conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
-            self._conn.commit()
+                self._db.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
 
     def changed_total(self, session_id: str) -> int:
         """How many records the session's actions have changed so far.
@@ -998,7 +1047,7 @@ class Store:
         return used
 
 
-def _row_to_session(row: sqlite3.Row) -> SessionRow:
+def _row_to_session(row: Any) -> SessionRow:
     return SessionRow(
         session_id=row["session_id"],
         principal=row["principal"],
@@ -1009,7 +1058,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRow:
     )
 
 
-def _row_to_warrant(row: sqlite3.Row) -> Warrant:
+def _row_to_warrant(row: Any) -> Warrant:
     return Warrant(
         warrant_id=row["warrant_id"],
         session_id=row["session_id"],
@@ -1026,7 +1075,7 @@ def _row_to_warrant(row: sqlite3.Row) -> Warrant:
     )
 
 
-def _row_to_action(row: sqlite3.Row) -> ActionRecord:
+def _row_to_action(row: Any) -> ActionRecord:
     return ActionRecord(
         action_id=row["action_id"],
         session_id=row["session_id"],

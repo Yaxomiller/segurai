@@ -37,6 +37,7 @@ from pathlib import Path
 
 from .authority import Authority, ChainError, verify_chain
 from .collector.chain import chain_summary, render_session
+from .collector.db import is_database_url, redact_url
 from .collector.store import Store
 
 
@@ -44,12 +45,25 @@ def _store(args: argparse.Namespace) -> Store:
     return Store(args.db)
 
 
+def _beside_db(args: argparse.Namespace, suffix: str) -> Path:
+    """A file kept next to the database, such as its key: segurai.db -> segurai.key.
+
+    A PostgreSQL database has no folder to sit beside, so its files default
+    to the current folder (segurai.key), as in segurai.toml.
+    """
+    return Path("segurai").with_suffix(suffix) if is_database_url(args.db) else Path(args.db).with_suffix(suffix)
+
+
+def _shown(db: str) -> str:
+    """The database, safe to print: a PostgreSQL password is masked."""
+    return redact_url(db)
+
+
 def _find_key(args: argparse.Namespace) -> Path | None:
     """The key to verify with: --key if given, else a .pub or .key beside the database."""
     if args.key:
         return Path(args.key)
-    db = Path(args.db)
-    for candidate in (db.with_suffix(".pub"), db.with_suffix(".key")):
+    for candidate in (_beside_db(args, ".pub"), _beside_db(args, ".key")):
         if candidate.exists():
             return candidate
     return None
@@ -59,7 +73,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     store = _store(args)
     rows = store.sessions(limit=args.limit)
     if not rows:
-        print(f"No sessions in {args.db}")
+        print(f"No sessions in {_shown(args.db)}")
         return 0
     for r in rows:
         print(f"{r.session_id}  {r.started_at.isoformat()}  {r.principal:<28} {r.request!r}")
@@ -213,7 +227,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     it signs statements about the log, never warrants.
     """
     store = _store(args)
-    key_path = Path(args.key) if args.key else Path(args.db).with_suffix(".key")
+    key_path = Path(args.key) if args.key else _beside_db(args, ".key")
     if not key_path.exists():
         print(f"No signing key at {key_path}. Create one with: segurai keygen --key {key_path}")
         return 1
@@ -229,7 +243,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         FileWitness(Path(args.witness)).publish(checkpoint)
         print()
         print(f"Also appended to the witness file {args.witness}. Check against it later with:")
-        print(f"  segurai --db {args.db} audit --witness {args.witness}")
+        print(f"  segurai --db {_shown(args.db)} audit --witness {args.witness}")
         return 0
     print()
     print("Keep this line somewhere outside the database - a ticket, an email to whoever "
@@ -244,9 +258,9 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     from .evidence import EvidenceError, build_pack
 
     store = _store(args)
-    key_path = Path(args.key) if args.key else Path(args.db).with_suffix(".key")
+    key_path = Path(args.key) if args.key else _beside_db(args, ".key")
     if not key_path.exists():
-        key_path = Path(args.db).with_suffix(".pub")
+        key_path = _beside_db(args, ".pub")
     if not key_path.exists():
         print("No key found. Pass --key with the organisation's key (private, to sign the pack).")
         return 1
@@ -280,7 +294,7 @@ def cmd_evidence_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
-    path = Path(args.key or Path(args.db).with_suffix(".key"))
+    path = Path(args.key) if args.key else _beside_db(args, ".key")
     if path.exists() and not args.force:
         print(f"{path} already exists (use --force to replace it; old warrants "
               f"will then fail verification).")
@@ -314,7 +328,7 @@ def _serve(args: argparse.Namespace, what: str) -> int:
     verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
     server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
     host, port = server.server_address[:2]
-    print(f"segurai {what}: http://{host}:{port}/  (spans to /v1/traces, database {args.db})")
+    print(f"segurai {what}: http://{host}:{port}/  (spans to /v1/traces, database {_shown(args.db)})")
     if verifier is not None:
         print(f"  signatures checked with {verifier.key_id}; forged warrants are refused")
     else:
@@ -551,8 +565,12 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if out.exists() and not args.force:
         print(f"{out} already exists (use --force to replace it).")
         return 1
-    _store(args).backup(out)
-    print(f"Backed up {args.db} to {out}")
+    try:
+        _store(args).backup(out)
+    except ValueError as exc:                     # PostgreSQL: use pg_dump
+        print(exc)
+        return 1
+    print(f"Backed up {_shown(args.db)} to {out}")
     return 0
 
 

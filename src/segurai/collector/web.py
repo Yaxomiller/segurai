@@ -206,7 +206,8 @@ def _integrity(store: Store, verifier: Authority | None, fresh: bool = False) ->
     """The tamper-evident log's audit, reused only while nothing in the database changed."""
     marker = store.change_marker()
     cached = _AUDIT_CACHE.get(store)
-    if (not fresh and cached is not None and cached[1] == marker and cached[2] is verifier
+    if (not fresh and marker is not None and cached is not None and cached[1] == marker
+            and cached[2] is verifier
             and time.monotonic() - cached[0] < AUDIT_CACHE_SECONDS):
         return cached[3]
     report = store.audit(verifier)

@@ -42,10 +42,11 @@ claude-agent = ["claude-agent-sdk>=0.2"]
 crewai = ["crewai>=1.15"]
 collector = ["opentelemetry-proto>=1.30"]
 identity = ["pyjwt[crypto]>=2.8"]
+postgres = ["psycopg[binary]>=3.1"]
 server = ["segurai[collector,identity]"]
 intent = ["anthropic>=1.5"]
 judge = ["anthropic>=1.5"]
-all = ["segurai[otel,langgraph,mcp,openai-agents,claude-agent,collector,identity,intent,judge]"]
+all = ["segurai[otel,langgraph,mcp,openai-agents,claude-agent,collector,identity,postgres,intent,judge]"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
