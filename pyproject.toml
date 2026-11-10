@@ -38,6 +38,8 @@ langgraph = ["langgraph>=1.0"]
 mcp = ["mcp>=2.0"]
 openai-agents = ["openai-agents>=0.24"]
 claude-agent = ["claude-agent-sdk>=0.2"]
+# CrewAI pulls in a vector database and much else, so it stays out of "all".
+crewai = ["crewai>=1.15"]
 collector = ["opentelemetry-proto>=1.30"]
 identity = ["pyjwt[crypto]>=2.8"]
 server = ["segurai[collector,identity]"]

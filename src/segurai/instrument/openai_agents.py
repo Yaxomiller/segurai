@@ -31,7 +31,6 @@ Tested against openai-agents 0.24, with a scripted model standing in for a real 
 from __future__ import annotations
 
 import json
-import threading
 from typing import Any, Mapping
 
 try:
@@ -46,31 +45,12 @@ except ImportError as exc:  # pragma: no cover - only without the optional packa
 
 from ..actions import ActionSpec
 from ..context import bind_warrant, current_warrant
-from ..models import Warrant
-from ..runtime import ViolationError, _rt, check_tool_call
+from ..runtime import ViolationError, check_tool_call
+from ._hops import hop
 
 __all__ = ["govern", "GUARDRAIL_NAME"]
 
 GUARDRAIL_NAME = "segurai"
-_hops: dict[tuple[str, str], Warrant] = {}
-_hops_lock = threading.Lock()
-
-
-def _hop(parent: Warrant, agent_name: str) -> Warrant:
-    """One delegated warrant per (warrant in force, agent): the agent's hop in the chain."""
-    if parent.holder == agent_name:
-        return parent
-    key = (parent.warrant_id, agent_name)
-    with _hops_lock:
-        child = _hops.get(key)
-        if child is None or child.is_expired():
-            store, authority = _rt.ensure()
-            child = authority.attenuate(parent, holder=agent_name)
-            store.put_warrant(child)
-            if len(_hops) > 10_000:
-                _hops.clear()
-            _hops[key] = child
-        return child
 
 
 def _guardrail(rules: Mapping[str, ActionSpec]) -> ToolInputGuardrail:
@@ -84,7 +64,7 @@ def _guardrail(rules: Mapping[str, ActionSpec]) -> ToolInputGuardrail:
         except ValueError:
             arguments = {}
         spec = rules.get(name) or ActionSpec("call", f"tool.{name}")
-        warrant = _hop(current_warrant(), data.agent.name)
+        warrant = hop(current_warrant(), data.agent.name)
         try:
             with bind_warrant(warrant):
                 record = check_tool_call(name, spec, arguments, tool_call_id=context.tool_call_id,

@@ -39,6 +39,22 @@ jobs:
       - name: Tier 1 scenario suite (milestone M2 target)
         run: segurai eval-tier1
 
+  crewai:
+    # CrewAI is a large install with its own pins, so its tests run here,
+    # against the real package, rather than in every cell of the matrix.
+    name: CrewAI integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[crewai]" pytest
+      - name: Tests
+        run: python -m pytest -q tests/test_crewai.py
+
   package:
     name: package builds cleanly
     runs-on: ubuntu-latest
