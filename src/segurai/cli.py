@@ -234,6 +234,47 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_evidence(args: argparse.Namespace) -> int:
+    """Build an evidence pack for one request: a zip an auditor can check on its own."""
+    from .collector.web import session_page
+    from .evidence import EvidenceError, build_pack
+
+    store = _store(args)
+    key_path = Path(args.key) if args.key else Path(args.db).with_suffix(".key")
+    if not key_path.exists():
+        key_path = Path(args.db).with_suffix(".pub")
+    if not key_path.exists():
+        print("No key found. Pass --key with the organisation's key (private, to sign the pack).")
+        return 1
+    authority = Authority.load(key_path) if b"PRIVATE" in key_path.read_bytes() else Authority.verifier(key_path)
+    try:
+        data = build_pack(store, args.session_id, authority,
+                          report_html=session_page(store, args.session_id, authority.public_only()))
+    except EvidenceError as exc:
+        print(f"Cannot build the pack: {exc}")
+        return 1
+    out = Path(args.out or f"{args.session_id}-evidence.zip")
+    out.write_bytes(data)
+    print(f"Wrote {out} ({len(data):,} bytes). Check it with:")
+    print(f"  segurai evidence-verify {out} --key <the organisation's public key>")
+    return 0
+
+
+def cmd_evidence_verify(args: argparse.Namespace) -> int:
+    from .evidence import EvidenceError, verify_pack
+
+    trusted = Path(args.key).read_bytes() if args.key else None
+    if trusted is not None and b"PRIVATE" in trusted:
+        trusted = Authority.load(args.key).public_key_pem()
+    try:
+        report = verify_pack(Path(args.pack), trusted)
+    except (EvidenceError, OSError) as exc:
+        print(f"Cannot read the pack: {exc}")
+        return 2
+    print(report.to_text())
+    return 0 if report.ok else 1
+
+
 def cmd_keygen(args: argparse.Namespace) -> int:
     path = Path(args.key or Path(args.db).with_suffix(".key"))
     if path.exists() and not args.force:
@@ -557,6 +598,15 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("checkpoint", help="sign the log's current state")
     s.add_argument("--witness", metavar="FILE", help="also append the checkpoint to this file")
     s.set_defaults(func=cmd_checkpoint)
+
+    s = sub.add_parser("evidence", help="build an evidence pack for one request")
+    s.add_argument("session_id")
+    s.add_argument("--out", help="where to write the zip (default: <session>-evidence.zip)")
+    s.set_defaults(func=cmd_evidence)
+
+    s = sub.add_parser("evidence-verify", help="check an evidence pack from the pack alone")
+    s.add_argument("pack")
+    s.set_defaults(func=cmd_evidence_verify)
 
     s = sub.add_parser("keygen", help="create a signing key")
     s.add_argument("--force", action="store_true", help="replace an existing key")
