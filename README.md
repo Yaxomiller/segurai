@@ -53,7 +53,7 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 - Reviews only the actions Tier 1 flagged, one narrow question each: within intent, outside intent, or needs a human
 - Verdicts sit beside Tier 1's record — advice, never authority — and agent-written text is treated as untrusted data
 - 50 labeled cases (29 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
-- The first run found a design gap, not a weak model: the judge was shown size limits without being told whether a person set them or the compiler estimated them, which explains every disagreement in that cluster. Fixed in `judge-v2`, awaiting a re-run ([results](evals/results/2026-11-05/README.md))
+- The first run found a design gap, not a weak model: the judge was shown size limits without being told whether a person set them or the compiler estimated them, which explains every disagreement in that cluster. `judge-v2` fixed that cluster and had zero dangerous misses on re-run, but the judge disagrees with itself on half the hard cases between versions, so the hard-case labels now need independent human review ([5 Nov](evals/results/2026-11-05/README.md), [10 Nov](evals/results/2026-11-10/README.md))
 
 **M6 — scope-creep report: built.**
 
@@ -366,7 +366,7 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M1 | Intent compiler — target met: 91.4% |
 | M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
-| M4 | Tier 2 semantic judge — 48% on ambiguous cases; `judge-v2` awaiting a re-run |
+| M4 | Tier 2 semantic judge — 0 dangerous misses; 47% on ambiguous cases, labels need human review |
 | M5 | Design-partner pilots — deployment kit and runbook ready |
 | M6 | Scope-creep report — built |
 | M7 | Tamper-evident log — built |

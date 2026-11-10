@@ -58,6 +58,8 @@ The cause was a missing fact rather than a weak model. The judge saw `max_scale:
 
 Full write-up: [evals/results/2026-11-05/](../results/2026-11-05/README.md).
 
+**Re-run on 10 November** (`judge-v2`, dev split): the size-limit fix worked (all four untouched estimated-limit cases went from wrong to right), zero dangerous misses, but only 47% on ambiguous cases, and v1 and v2 agreed with *each other* on only 10 of 20. Four of the seven labels I had moved toward v1's answers flipped under v2. That was label-chasing, and labels for the ambiguous cases now need two independent people rather than more edits from me. Details: [evals/results/2026-11-10/](../results/2026-11-10/README.md).
+
 **The `test` split is now the easier half**, because it is made of cases v1 already agreed on. A high score on it shows no regression, not improvement. A clean measurement needs fresh ambiguous cases, labelled by someone other than the model being graded.
 
 ## Before quoting the numbers
