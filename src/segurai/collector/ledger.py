@@ -155,6 +155,23 @@ class Checkpoint:
                 f"at={self.created_at.isoformat()} key={self.key_id or 'unsigned'} "
                 f"sig={signature}")
 
+    @staticmethod
+    def from_text(line: str) -> "Checkpoint":
+        """Read a line written by :meth:`to_text`. Raises ValueError if it isn't one."""
+        parts = line.strip().split(" ")
+        if not parts or parts[0] != "segurai-checkpoint":
+            raise ValueError("not a segurai checkpoint line")
+        fields = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+        missing = {"seq", "head", "at", "key", "sig"} - set(fields)
+        if missing:
+            raise ValueError(f"checkpoint line is missing {sorted(missing)}")
+        if len(fields["head"]) != 64 or any(c not in "0123456789abcdef" for c in fields["head"]):
+            raise ValueError("checkpoint head must be 64 hex characters")
+        return Checkpoint(seq=int(fields["seq"]), head=fields["head"],
+                          created_at=datetime.fromisoformat(fields["at"]),
+                          key_id=None if fields["key"] == "unsigned" else fields["key"],
+                          signature=base64.b64decode(fields["sig"], validate=True) or None)
+
 
 @dataclass(frozen=True)
 class AuditProblem:
@@ -184,6 +201,8 @@ class AuditReport:
     checkpoints: int = 0
     checkpoints_verified: int = 0
     signatures_checked: bool = False
+    witnessed: int = 0                                 # checkpoints held OUTSIDE the database
+    witnessed_verified: int = 0
     problems: list[AuditProblem] = field(default_factory=list)
 
     @property
@@ -196,6 +215,7 @@ class AuditReport:
             "verified_to": self.verified_to, "rows_checked": self.rows_checked,
             "rows_unlogged": self.rows_unlogged, "amendments": self.amendments,
             "checkpoints": self.checkpoints, "checkpoints_verified": self.checkpoints_verified,
+            "witnessed": self.witnessed, "witnessed_verified": self.witnessed_verified,
             "signatures_checked": self.signatures_checked,
             "problems": [
                 {"kind": p.kind, "seq": p.seq, "ref_id": p.ref_id, "detail": p.detail}
@@ -223,6 +243,9 @@ class AuditReport:
         else:
             lines.append("  checkpoints    : none - without one, a determined editor with "
                          "database access could rebuild the whole chain")
+        if self.witnessed:
+            lines.append(f"  witnessed      : {self.witnessed_verified}/{self.witnessed} checkpoint(s) "
+                         f"held outside the database still match")
         lines.append("")
         if self.ok:
             lines.append("No sign of tampering: every record hashes to its entry, and every "

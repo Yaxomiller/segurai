@@ -173,14 +173,27 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """Check the tamper-evident log: records edited or deleted, entries removed."""
+    from .witness import read_witness_file
+
     store = _store(args)
     key_path = _find_key(args)
     verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
-    report = store.audit(verifier)
+    witnessed, unreadable = [], []
+    for path in args.witness or []:
+        try:
+            found, bad = read_witness_file(path)
+        except OSError as exc:
+            print(f"Cannot read witness file {path}: {exc}")
+            return 2
+        witnessed += found
+        unreadable += [f"{path} {note}" for note in bad]
+    report = store.audit(verifier, witnessed=witnessed)
     if args.json:
-        print(json.dumps(report.to_dict(), indent=2))
+        print(json.dumps({**report.to_dict(), "unreadable_witness_lines": unreadable}, indent=2))
     else:
         print(report.to_text())
+        for note in unreadable:
+            print(f"  ! unreadable witness line - {note}")
         if verifier is None and report.checkpoints:
             print()
             print("Checkpoint signatures were not checked: no key found. Pass --key, or keep "
@@ -206,6 +219,14 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         print(f"Nothing to checkpoint: {exc}")
         return 1
     print(checkpoint.to_text())
+    if args.witness:
+        from .witness import FileWitness
+
+        FileWitness(Path(args.witness)).publish(checkpoint)
+        print()
+        print(f"Also appended to the witness file {args.witness}. Check against it later with:")
+        print(f"  segurai --db {args.db} audit --witness {args.witness}")
+        return 0
     print()
     print("Keep this line somewhere outside the database - a ticket, an email to whoever "
           "audits you, or a transparency log. Then even someone holding the key cannot "
@@ -529,9 +550,12 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("audit", help="check the tamper-evident log")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--witness", action="append", metavar="FILE",
+                   help="a file of checkpoints kept outside the database (repeatable)")
     s.set_defaults(func=cmd_audit)
 
     s = sub.add_parser("checkpoint", help="sign the log's current state")
+    s.add_argument("--witness", metavar="FILE", help="also append the checkpoint to this file")
     s.set_defaults(func=cmd_checkpoint)
 
     s = sub.add_parser("keygen", help="create a signing key")

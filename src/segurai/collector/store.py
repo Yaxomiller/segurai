@@ -25,7 +25,7 @@ import json
 import sqlite3
 import threading
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +145,31 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     signature      BLOB
 );
 
+-- Alerts waiting to go out, and what happened to them (alerts.py). Operational,
+-- not evidence, so not in the tamper-evident log. The unique key means the
+-- same alert can never be queued twice, however many workers run.
+CREATE TABLE IF NOT EXISTS alerts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL,
+    ref             TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    body_json       TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    sent_at         TEXT,
+    failed_at       TEXT,
+    last_error      TEXT,
+    UNIQUE (kind, ref, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_due ON alerts(sent_at, failed_at, next_attempt_at);
+
+-- Small named values the server keeps between runs (the alert worker's cursor...).
+CREATE TABLE IF NOT EXISTS state (
+    name            TEXT PRIMARY KEY,
+    value           TEXT NOT NULL
+);
+
 -- Every version of the organisation's rules that was ever in force (policy.py).
 -- Findings name the version, so an audit can show exactly which rules applied.
 CREATE TABLE IF NOT EXISTS policies (
@@ -213,6 +238,11 @@ class Store:
             self._conn.executescript(_SCHEMA)
             self._migrate()
             self._conn.commit()
+            # Each logged table's columns, for writes that replace a whole row.
+            self._columns = {
+                table: [r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")]
+                for table, _ in _LOGGED_TABLES.values()
+            }
 
     def _migrate(self) -> None:
         for table, column, sql_type in _ADDED_COLUMNS:
@@ -251,8 +281,15 @@ class Store:
         an entry exists without its record (which would look like a deletion).
         """
         columns = tuple(values)
-        sql = (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
-               f"VALUES ({', '.join('?' for _ in columns)})")
+        key = _LOGGED_TABLES[kind][1]
+        # An upsert that sets EVERY column - those not given take their
+        # default, exactly as a fresh insert would - so a rewrite replaces the
+        # whole record (what the log's hash describes), while the row keeps its
+        # place in insertion order (which the alert cursor relies on).
+        updates = ", ".join(f"{c} = excluded.{c}" for c in self._columns[table] if c != key)
+        sql = (f"INSERT INTO {table} ({', '.join(columns)}) "
+               f"VALUES ({', '.join('?' for _ in columns)}) "
+               f"ON CONFLICT ({key}) DO UPDATE SET {updates}")
         with self._lock:
             self._conn.execute(sql, tuple(values[c] for c in columns))
             self._append_entry(kind, ref_id, row_payload(values))
@@ -334,8 +371,13 @@ class Store:
 
     # ---- the audit ------------------------------------------------------
 
-    def audit(self, verifier: Any = None) -> AuditReport:
+    def audit(self, verifier: Any = None, witnessed: list[Checkpoint] | None = None) -> AuditReport:
         """Check the log against itself, against the records, and against the checkpoints.
+
+        ``witnessed`` are checkpoints kept OUTSIDE this database (see
+        witness.py) - the strongest check: a rewrite of history they already
+        cover is caught even if whoever did it held the signing key and
+        replaced every checkpoint stored here.
 
         ``verifier`` is an Authority holding at least the public half of the
         checkpoint-signing key. Without it the chain and the records are still
@@ -426,6 +468,30 @@ class Store:
                         "checkpoint", f"its signature does not check out: {exc}", seq=cp.seq))
                     continue
             report.checkpoints_verified += 1
+
+        # 5. Checkpoints witnessed outside the database. These were published
+        #    as they were made, so the database's owner can't take them back.
+        for cp in witnessed or []:
+            report.witnessed += 1
+            if verifier is not None:
+                try:
+                    verifier.verify_bytes(cp.signature or b"", cp.signing_bytes())
+                except Exception:
+                    report.problems.append(AuditProblem(
+                        "witness", "a witnessed checkpoint's signature does not check out - it was "
+                                   "not made with this organisation's key", seq=cp.seq))
+                    continue
+            if cp.seq not in hash_at:
+                report.problems.append(AuditProblem(
+                    "witness", f"a checkpoint witnessed outside the database covers entry {cp.seq}, "
+                               f"which is no longer in the log - history was cut short", seq=cp.seq))
+                continue
+            if hash_at[cp.seq] != cp.head:
+                report.problems.append(AuditProblem(
+                    "witness", "the log no longer matches a checkpoint witnessed outside the "
+                               "database - history was rewritten after it was witnessed", seq=cp.seq))
+                continue
+            report.witnessed_verified += 1
         return report
 
     def _read(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
@@ -560,6 +626,77 @@ class Store:
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    # ---- alerts (alerts.py) -----------------------------------------------
+
+    def get_state(self, name: str, default: str | None = None) -> str | None:
+        rows = self._read("SELECT value FROM state WHERE name = ?", (name,))
+        return rows[0]["value"] if rows else default
+
+    def set_state(self, name: str, value: str) -> None:
+        self._write("INSERT INTO state (name, value) VALUES (?, ?) "
+                    "ON CONFLICT (name) DO UPDATE SET value = excluded.value", (name, value))
+
+    def alert_cursor(self) -> int:
+        """How far through the actions table the alert worker has read."""
+        value = self.get_state("alerts.cursor")
+        if value is None:
+            # A new deployment starts at the end: alerting on months of
+            # history the first time the worker starts would be noise.
+            rows = self._read("SELECT COALESCE(MAX(rowid), 0) AS last FROM actions")
+            position = int(rows[0]["last"])
+            self.set_state("alerts.cursor", str(position))
+            return position
+        return int(value)
+
+    def set_alert_cursor(self, position: int) -> None:
+        self.set_state("alerts.cursor", str(position))
+
+    def actions_after(self, position: int, limit: int = 500) -> list[tuple[int, ActionRecord]]:
+        """Actions stored after ``position``, in the order they were stored."""
+        rows = self._read("SELECT rowid AS pos, * FROM actions WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                          (position, limit))
+        return [(int(r["pos"]), _row_to_action(r)) for r in rows]
+
+    def queue_alert(self, kind: str, ref: str, channel: str, body: dict) -> int:
+        """Queue one alert; 1 if queued, 0 if that exact alert was queued before."""
+        now = utcnow().isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT INTO alerts (kind, ref, channel, body_json, created_at, next_attempt_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, ref, channel) DO NOTHING",
+                (kind, ref, channel, json.dumps(body), now, now))
+            self._conn.commit()
+            return cursor.rowcount
+
+    def due_alerts(self, limit: int = 50) -> list[dict]:
+        rows = self._read(
+            "SELECT * FROM alerts WHERE sent_at IS NULL AND failed_at IS NULL AND next_attempt_at <= ? "
+            "ORDER BY id LIMIT ?", (utcnow().isoformat(), limit))
+        return [{"id": r["id"], "kind": r["kind"], "ref": r["ref"], "channel": r["channel"],
+                 "attempts": r["attempts"], "body": json.loads(r["body_json"])} for r in rows]
+
+    def finish_alert(self, alert_id: int, *, error: str | None = None, give_up: bool = False,
+                     retry_in: timedelta | None = None) -> None:
+        """Record a delivery: sent (no error), retry later, or given up for good."""
+        now = utcnow()
+        if error is None:
+            self._write("UPDATE alerts SET sent_at = ?, attempts = attempts + 1, last_error = NULL "
+                        "WHERE id = ?", (now.isoformat(), alert_id))
+        elif give_up:
+            self._write("UPDATE alerts SET failed_at = ?, attempts = attempts + 1, last_error = ? "
+                        "WHERE id = ?", (now.isoformat(), error, alert_id))
+        else:
+            self._write("UPDATE alerts SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? "
+                        "WHERE id = ?", (error, (now + (retry_in or timedelta(seconds=30))).isoformat(), alert_id))
+
+    def alerts(self, limit: int = 100) -> list[dict]:
+        """Recent alerts with their delivery state, newest first (for the dashboard)."""
+        rows = self._read("SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,))
+        return [{"id": r["id"], "kind": r["kind"], "ref": r["ref"], "channel": r["channel"],
+                 "created_at": r["created_at"], "attempts": r["attempts"], "sent_at": r["sent_at"],
+                 "failed_at": r["failed_at"], "last_error": r["last_error"],
+                 "headline": json.loads(r["body_json"]).get("headline", "")} for r in rows]
 
     # ---- organisation rules ---------------------------------------------
 
