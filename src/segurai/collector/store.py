@@ -144,6 +144,14 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     key_id         TEXT,
     signature      BLOB
 );
+
+-- Every version of the organisation's rules that was ever in force (policy.py).
+-- Findings name the version, so an audit can show exactly which rules applied.
+CREATE TABLE IF NOT EXISTS policies (
+    version        TEXT PRIMARY KEY,
+    created_at     TEXT NOT NULL,
+    policy_json    TEXT NOT NULL
+);
 """
 
 #: Which table each logged kind lives in, and the column holding its id.
@@ -152,6 +160,7 @@ _LOGGED_TABLES = {
     "warrant": ("warrants", "warrant_id"),
     "action": ("actions", "action_id"),
     "verdict": ("verdicts", "action_id"),
+    "policy": ("policies", "version"),
 }
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -540,6 +549,27 @@ class Store:
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    # ---- organisation rules ---------------------------------------------
+
+    def put_policy(self, policy: Any) -> None:
+        """Record a version of the organisation's rules, once per version."""
+        if self._read("SELECT 1 FROM policies WHERE version = ?", (policy.version,)):
+            return
+        self._write_row("policies", {
+            "version": policy.version,
+            "created_at": utcnow().isoformat(),
+            "policy_json": json.dumps(policy.to_dict(), sort_keys=True),
+        }, kind="policy", ref_id=policy.version)
+
+    def get_policy(self, version: str) -> dict | None:
+        rows = self._read("SELECT * FROM policies WHERE version = ?", (version,))
+        return json.loads(rows[0]["policy_json"]) if rows else None
+
+    def policies(self) -> list[tuple[str, str, dict]]:
+        """(version, first recorded, rules) for every version, oldest first."""
+        rows = self._read("SELECT * FROM policies ORDER BY created_at")
+        return [(r["version"], r["created_at"], json.loads(r["policy_json"])) for r in rows]
 
     # ---- verdicts (Tier 2) ---------------------------------------------
 

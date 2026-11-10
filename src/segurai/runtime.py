@@ -53,6 +53,7 @@ from .authority import DEFAULT_TTL, Authority
 from .collector.store import Store
 from .context import bind_warrant, current_warrant, import_chain
 from .models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
+from .policy import Policy
 
 __all__ = [
     "Mode", "configure", "session", "agent", "delegate", "resume", "act", "tool", "tool_span",
@@ -143,6 +144,25 @@ class _Runtime:
         self.mode: Mode = Mode.OBSERVE
         self.listeners: list[Listener] = []
         self.intent: Any = None  # an IntentCompiler, when scopes come from requests
+        self.policy: Policy = Policy()
+        # warrant id -> holders from the root down; a bounded cache, so policy
+        # rules about "any hop in the chain" cost one lookup per warrant.
+        self._holders: dict[str, tuple[str, ...]] = {}
+
+    def holders(self, w: Warrant) -> tuple[str, ...]:
+        """Every holder from the root down to ``w`` (for rules that name agents)."""
+        cached = self._holders.get(w.warrant_id)
+        if cached is not None:
+            return cached
+        store, _ = self.ensure()
+        try:
+            holders = tuple(x.holder for x in store.chain_to(w.warrant_id))
+        except ValueError:          # not stored (a hand-built warrant): this hop only
+            holders = (w.holder,)
+        if len(self._holders) > 4096:
+            self._holders.clear()
+        self._holders[w.warrant_id] = holders
+        return holders
 
     def ensure(self) -> tuple[Store, Authority]:
         """The store and authority, falling back to in-memory ones if unconfigured."""
@@ -177,6 +197,7 @@ def configure(
     mode: Mode | str = Mode.OBSERVE,
     key: str | Path | None = None,
     intent: Any = None,
+    policy: Policy | None = None,
 ) -> None:
     """Point the runtime at a store and an authority, and set the mode.
 
@@ -190,6 +211,11 @@ def configure(
 
     ``intent`` is an ``IntentCompiler``. With one set, ``session()`` can be
     opened without a scope and derives it from the request text.
+
+    ``policy`` is the organisation's rules (see policy.py). Every action is
+    checked against them as well as against its warrant; the version in force
+    is recorded in the store's tamper-evident log. Passing a new policy
+    replaces the old one; ``Policy()`` removes all rules.
     """
     if intent is not None:
         _rt.intent = intent
@@ -204,6 +230,12 @@ def configure(
         _rt.store = store
     if authority is not None:
         _rt.authority = authority
+    if store is not None:
+        _rt._holders.clear()
+    if policy is not None:
+        _rt.policy = policy
+    if _rt.policy and _rt.store is not None:
+        _rt.store.put_policy(_rt.policy)
     _rt.mode = Mode(mode)
 
 
@@ -399,8 +431,15 @@ def _evaluate(w: Warrant, operation: str, resource: str, scale: int, irreversibl
         # and this action would add to it - reads skip the database entirely.
         store, _ = _rt.ensure()
         changed = store.changed_total(w.session_id)
-    return w.scope.evaluate(operation, resource, scale, irreversible,
-                            evidence=evidence, changed_so_far=changed)
+    findings = w.scope.evaluate(operation, resource, scale, irreversible,
+                                evidence=evidence, changed_so_far=changed)
+    if _rt.policy:
+        # The organisation's rules apply on top of the warrant: an action must
+        # fit both. They only ever take away, so this can add findings but
+        # never remove one.
+        findings += _rt.policy.evaluate(operation, resource, scale, irreversible,
+                                        principal=w.root_principal, holders=_rt.holders(w))
+    return findings
 
 
 def _record(w: Warrant, operation: str, resource: str, scale: int, irreversible: bool,

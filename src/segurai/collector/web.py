@@ -278,6 +278,10 @@ def _explain(f: Finding, a: ActionRecord) -> str:
         return f"It broke a condition of the request: <strong>{_e(f.clause or f.reason)}</strong>."
     if f.check == "spec":
         return "The tool call couldn't be described, so nobody could have authorized it."
+    if f.check == "policy":
+        rule = f.clause.split(": ", 1)[-1] if f.clause else "an organisation rule"
+        return (f"It broke an organisation rule that no request can override: "
+                f"<strong>{_e(rule)}</strong>.")
     return _e(f.reason)
 
 

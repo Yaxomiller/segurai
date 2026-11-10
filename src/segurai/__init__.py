@@ -51,6 +51,7 @@ from .context import (
     import_warrant,
 )
 from .models import ActionRecord, Check, Finding, Scope, Warrant
+from .policy import Policy, PolicyError, Rule
 from .runtime import (
     Listener,
     Mode,
@@ -79,7 +80,7 @@ __all__ = [
     # describing tool calls
     "ActionSpec", "ActionSpecError", "count", "arg",
     # model
-    "Scope", "Check", "Finding", "Warrant", "ActionRecord",
+    "Scope", "Check", "Finding", "Warrant", "ActionRecord", "Policy", "Rule", "PolicyError",
     # authority
     "Authority", "ChainError", "verify_chain",
     # context

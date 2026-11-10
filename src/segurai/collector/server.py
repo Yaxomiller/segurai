@@ -82,16 +82,45 @@ class _Handler(BaseHTTPRequestHandler):
         # Route request logs through logging instead of printing to stderr.
         _log.info("%s - %s", self.address_string(), format % args)
 
+    #: The most of an unread request body that is read and thrown away before
+    #: an error response (see _drain). Bigger bodies are not worth reading.
+    DRAIN_LIMIT = 1024 * 1024
+
+    def _drain(self) -> None:
+        """Read and discard a request body nobody is going to use.
+
+        A request refused before its body was read (wrong path, no token)
+        still has that body waiting in the socket. Closing a socket with
+        unread data in it makes the operating system send a TCP reset rather
+        than a normal close, and the client can see the reset before it
+        reads our answer - an "aborted connection" instead of a clear 404.
+        Reading the body first lets the connection close cleanly. Bodies too
+        big to be worth reading are left; the client then gets the reset,
+        which is fair for a request that large.
+        """
+        if getattr(self, "_body_read", False):
+            return
+        self._body_read = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if 0 < length <= self.DRAIN_LIMIT:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+
     def _send(self, status: int, body: bytes, content_type: str = "text/plain; charset=utf-8",
               extra_headers: dict[str, str] | None = None) -> None:
+        if status >= 400:
+            self._drain()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         # After an error, finish with the connection rather than holding it
-        # open. The request may have been refused before its body was read,
-        # so what is left in the socket belongs to a message nobody handled;
-        # reusing the connection then desynchronises client and server, which
-        # showed up as the client's connection being aborted at random.
+        # open: whatever the client sends next on it belongs to an exchange
+        # that already failed.
         if status >= 400:
             self.close_connection = True
             self.send_header("Connection", "close")
@@ -137,6 +166,7 @@ class _Handler(BaseHTTPRequestHandler):
         if length < 0 or length > self.server.max_body:
             self._send(413, b"request body too large")
             return None
+        self._body_read = True
         body = self.rfile.read(length)
 
         if self.headers.get("Content-Encoding", "").lower() == "gzip":
