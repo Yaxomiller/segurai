@@ -904,7 +904,23 @@ class Store:
             "SELECT * FROM alerts WHERE sent_at IS NULL AND failed_at IS NULL AND next_attempt_at <= ? "
             "ORDER BY id LIMIT ?", (utcnow().isoformat(), limit))
         return [{"id": r["id"], "kind": r["kind"], "ref": r["ref"], "channel": r["channel"],
-                 "attempts": r["attempts"], "body": json.loads(r["body_json"])} for r in rows]
+                 "attempts": r["attempts"], "next_attempt_at": r["next_attempt_at"],
+                 "body": json.loads(r["body_json"])} for r in rows]
+
+    def claim_alert(self, alert_id: int, seen_next_attempt_at: str, lease: timedelta) -> bool:
+        """Take one due alert for delivery, so no other server sends it too.
+
+        A compare-and-set on ``next_attempt_at``: only the caller whose update
+        still finds the value it read wins. The winner pushes the alert out of
+        reach for ``lease``. If it dies before finishing, the alert falls due
+        again then: delivered at least once, and twice only if a send outlives
+        its lease.
+        """
+        until = (utcnow() + lease).isoformat()
+        cursor = self._write(
+            "UPDATE alerts SET next_attempt_at = ? WHERE id = ? AND next_attempt_at = ? "
+            "AND sent_at IS NULL AND failed_at IS NULL", (until, alert_id, seen_next_attempt_at))
+        return cursor.rowcount == 1
 
     def finish_alert(self, alert_id: int, *, error: str | None = None, give_up: bool = False,
                      retry_in: timedelta | None = None) -> None:

@@ -225,3 +225,42 @@ def test_the_background_worker_starts_and_stops(receiver):
         assert len(receiver.posts) == 1
     finally:
         worker.stop()
+
+
+class _Slow:
+    """A channel that takes a moment to send, so two servers overlap."""
+
+    def __init__(self):
+        self.name, self.sent, self._lock = "security", [], threading.Lock()
+
+    def send(self, headline, lines, payload):
+        import time
+
+        time.sleep(0.1)
+        with self._lock:
+            self.sent.append(headline)
+
+
+def test_servers_sharing_a_database_send_each_alert_once(monkeypatch):
+    """Both servers see the alert due; only the one that claims it sends it."""
+    store = segurai._runtime.store
+    channel = _Slow()
+    workers = [AlertWorker(store=store, channels=[channel], public_url="https://segurai.acme.example",
+                           verifier=segurai._runtime.authority) for _ in range(2)]
+    store.queue_alert("violation", "act_1", "security", {"headline": "one alert", "lines": [], "payload": {}})
+
+    real, both_read = store.due_alerts, threading.Barrier(2)
+
+    def due_for_both(limit=50):
+        rows = real(limit=limit)
+        both_read.wait(timeout=5)              # neither claims until both have read it
+        return rows
+
+    monkeypatch.setattr(store, "due_alerts", due_for_both)
+    threads = [threading.Thread(target=w._deliver_due) for w in workers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert channel.sent == ["one alert"]
+    assert store.alerts()[0]["sent_at"] is not None

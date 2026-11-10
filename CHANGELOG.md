@@ -2,6 +2,81 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-11-10
+
+From a library to something a company can deploy: agents can't go around it, the person who asked is proven, and one command runs the whole thing.
+
+### Agents can't go around it
+
+- **The gateway** (`gateway.py`) is a reverse proxy in front of the systems agents act on. It holds their credentials, so agents can reach those systems only through it.
+  - Every request carries the agent's chain and a fresh signature from that agent's own key, over the method, target, body hash, time and a one-time nonce.
+  - A route table describes what each request does. The gateway checks the request against the warrant and the company's rules, and records it before forwarding.
+  - A refused request never reaches the system. Ambiguous paths, duplicate JSON keys and method-override headers are refused or dropped, and redirects are not followed.
+- **Each hop holds its own key.** A warrant names its holder's public key, and children are signed with the parent holder's key, so agents can delegate without the organisation's key.
+- **Chain tokens** (`export_chain` / `segurai.resume`) carry a whole chain across processes.
+
+### Who asked, proven
+
+- **ID tokens from the company's login system** (`identity.py`): any OIDC provider.
+  - Asymmetric signatures only, and keys are never fetched over plain HTTP.
+  - Issuer, audience, expiry and email domain are all checked.
+- **The issuer** (`POST /v1/sessions`) mints a root only for a proven person, and only inside their group's **ceiling**. The session records how the person was proven, and every page says "identity verified" or "claimed, not verified".
+
+### Company rules, alerts, witnesses, evidence
+
+- **Company rules** (`policy.py`): deny and limit rules no grant can override. They are versioned and written into the tamper-evident log, and each finding names the version in force.
+- **Alerts** (`alerts.py`) go to Slack, a signed webhook or email, for violations, blocked actions and failed audits.
+  - Each alert is queued once, and delivery is retried with backoff.
+  - With several servers on one database, each alert is claimed just before it is sent, so exactly one server sends it.
+- **Witnesses** (`witness.py`): checkpoints are also published outside the database, to an append-only file or a webhook. `segurai audit --witness` then catches a rewrite even by someone holding the key.
+- **Evidence packs** (`segurai evidence`, `segurai evidence-verify`): one request as a zip that an auditor can verify with only the public key.
+
+### A product you can run
+
+- **`segurai serve`** runs the whole deployment from one `segurai.toml`: dashboard, span ingest, issuer, gateway, alerts and checkpoints.
+  - The file is read strictly: a typo or an inline secret is an error.
+  - `segurai init` writes a commented starting file, and `segurai config check` validates one, even while the server runs.
+- **Dashboard sign-in.**
+  - Local accounts with scrypt passwords and throttled sign-in, or the company login (OIDC with PKCE).
+  - Three roles: viewer, auditor and admin.
+  - CSRF-protected forms, and an access log written into the tamper-evident log.
+  - Search and filters on the overview.
+- **PostgreSQL** (`segurai[postgres]`): give the store a `postgresql://` URL, or `database_env` in `segurai.toml`.
+  - The SQL is written once, with the differences in `collector/db.py`.
+  - An advisory lock stops several servers from forking the log.
+  - A dropped connection is replaced, but never half-way through a write.
+  - CI runs the whole suite on PostgreSQL 16.
+- **Docker.** The image runs `segurai serve` as an unprivileged user, on a read-only filesystem, with no capabilities.
+  - `deploy/compose.yaml` runs it with SQLite, and `deploy/compose.postgres.yaml` adds PostgreSQL.
+  - `deploy/smoke-test.sh` proves a deployment end to end, and CI runs it with both.
+  - Releases publish the image to `ghcr.io/yaxomiller/segurai` for amd64 and arm64.
+- **More frameworks:** the OpenAI Agents SDK (a tool input guardrail), the Claude Agent SDK (a PreToolUse hook) and CrewAI (a before-tool-call hook that fails closed in enforce mode). Each is tested against the real framework.
+
+### The judge
+
+- `--votes 2` asks twice. Agreeing answers give the verdict, and disagreeing ones become "a person must decide".
+- `segurai label` lets a person label the eval cases without seeing the existing labels. `segurai label-agreement` reports Cohen's kappa and the disputed cases, and writes the labels both people agree on.
+
+### The demo
+
+- Two new scenes, built by running the real code:
+  - a company rule that outranks a manager's grant;
+  - a request proven by Acme's login system, whose agent reaches the CRM only through the gateway, which refuses a delete before the CRM sees it.
+- Pages name the issuer's ceiling, and mark actions that came through the gateway.
+
+### Fixed
+
+- **Two servers could share a port on Windows.** `http.server` sets SO_REUSEADDR, which on Windows lets a second process bind a port already in use, so `segurai serve` could start while another program answered its requests. Servers now bind exclusively, and a busy port is refused with a plain message.
+- **A write that failed half-way could be committed by the next write**, leaving a record without its log entry. Every write is now one transaction.
+- **The dashboard's integrity cache** was keyed by `id(store)`, so a reopened database could inherit an old "all clear". It is now keyed by the store itself and by whether the database has changed.
+- **The Tier 1 speed gate** was flaky on shared CI machines. Timing is now pooled over repeated passes.
+
+### Changed
+
+- **PyJWT** is now a core dependency, because checking who asked is part of the core promise.
+- `segurai[server]` installs what `segurai serve` needs; `segurai[crewai]` is its own extra (CrewAI is large).
+- The container runs `segurai serve` on ports 8700 (dashboard) and 8800 (gateway). `SEGURAI_INGEST_TOKEN` replaces `SEGURAI_COLLECTOR_TOKEN` in the Compose files.
+
 ## [0.3.0] — 2026-11-10
 
 The demo, and a dashboard worth showing.

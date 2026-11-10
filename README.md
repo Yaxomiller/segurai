@@ -20,6 +20,18 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 
 ## Status
 
+**0.4 — deployable: one command runs the whole thing, and agents can't go around it.**
+
+- **A gateway agents can't go around.** Agents reach real systems only through the gateway, which holds the systems' credentials. It checks every request against the agent's warrant and the company's rules before forwarding it. Each request is signed with the agent's own key, so a stolen chain token isn't enough.
+- **Who asked, proven.** The issuer accepts an ID token from the company's login system (OIDC), checks it, and grants no more than the person's group may ever have. Requests started this way say "identity verified" on every page. Others say "claimed".
+- **Company rules.** Deny and limit rules that no request can override, versioned and written into the tamper-evident log.
+- **Alerts** to Slack, a webhook (HMAC-signed) or email, for violations, blocked actions and tampering.
+- **Outside witnesses** for checkpoints, and **evidence packs**: a zip about one request that an auditor can verify with nothing but the public key.
+- **Dashboard sign-in** with roles (viewer, auditor, admin), company login via OIDC, an access log, and search and filters.
+- **`segurai serve`** runs it all from one checked `segurai.toml`. **Docker** and **PostgreSQL** are supported, and CI tests both end to end.
+- **More frameworks:** the OpenAI Agents SDK, the Claude Agent SDK and CrewAI, alongside LangGraph, MCP and OpenTelemetry.
+- **The judge asks twice** and hands disagreements to a person, and two people can label its test cases blind.
+
 **M0 — chain capture: complete.**
 
 - Signed, attenuation-only delegation (Ed25519), with keys that persist so old chains can be re-verified
@@ -56,6 +68,7 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 - Verdicts sit beside Tier 1's record — advice, never authority — and agent-written text is treated as untrusted data
 - 50 labeled cases (29 ambiguous, 3 with planted prompt injection); approving a bad action counts as a dangerous miss
 - The first run found a design gap, not a weak model: the judge was shown size limits without being told whether a person set them or the compiler estimated them, which explains every disagreement in that cluster. `judge-v2` fixed that cluster and had zero dangerous misses on re-run, but the judge disagrees with itself on half the hard cases between versions, so the hard-case labels now need independent human review ([5 Nov](evals/results/2026-11-05/README.md), [10 Nov](evals/results/2026-11-10/README.md))
+- `--votes 2` asks twice and turns disagreement into "a person must decide"; `segurai label` and `segurai label-agreement` let two people label the cases blind and measure how far they agree. The score will be re-measured against their labels
 
 **M6 — scope-creep report: built.**
 
@@ -71,20 +84,24 @@ New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem
 
 **M5 — design-partner pilots: kit ready.**
 
-- A hardened container for the collector and web view, and a Compose file that won't start without a token
+- A hardened container running the whole deployment, with SQLite or PostgreSQL, smoke-tested end to end in CI ([deploy/](deploy/README.md))
 - A pilot runbook: day-0 setup, the weekly review, the day-30 wrap-up, data handling ([docs/PILOT_RUNBOOK.md](docs/PILOT_RUNBOOK.md))
 - The pilots themselves need partners — that part is people, not code
 
 ## Install
 
 ```bash
-pip install segurai                 # core: needs only `cryptography`
-pip install "segurai[langgraph]"    # + LangGraph integration
-pip install "segurai[mcp]"          # + MCP integration
-pip install "segurai[otel]"         # + OpenTelemetry spans
-pip install "segurai[intent]"       # + intent compiler (Anthropic SDK)
-pip install "segurai[judge]"        # + Tier 2 judge (Anthropic SDK)
-pip install "segurai[collector]"    # + collector protobuf support
+pip install segurai                     # core: needs only `cryptography` and `pyjwt`
+pip install "segurai[server]"           # + what `segurai serve` needs (dashboard, ingest, company sign-in)
+pip install "segurai[postgres]"         # + PostgreSQL instead of a SQLite file
+pip install "segurai[langgraph]"        # + LangGraph integration
+pip install "segurai[mcp]"              # + MCP integration
+pip install "segurai[openai-agents]"    # + OpenAI Agents SDK integration
+pip install "segurai[claude-agent]"     # + Claude Agent SDK integration
+pip install "segurai[crewai]"           # + CrewAI integration
+pip install "segurai[otel]"             # + OpenTelemetry spans
+pip install "segurai[intent]"           # + intent compiler (Anthropic SDK)
+pip install "segurai[judge]"            # + Tier 2 judge (Anthropic SDK)
 ```
 
 Working on Segurai itself:
@@ -223,6 +240,26 @@ async def delete_records(table: str, ids: list[int], ctx: Context) -> str:
 
 Tools without a rule are described from the server's own `readOnlyHint` / `destructiveHint` annotations. Full example: [examples/mcp_demo.py](examples/mcp_demo.py).
 
+## OpenAI Agents SDK, Claude Agent SDK, CrewAI
+
+Each one is checked at the framework's own "before a tool runs" hook. In enforce mode, a refused call never runs, and the model is told why so it can change course:
+
+```python
+# OpenAI Agents SDK: a tool input guardrail on every tool, including handed-off agents'
+from segurai.instrument.openai_agents import govern
+agent = govern(Agent(name="crm_agent", tools=[delete_records]), rules=RULES)
+
+# Claude Agent SDK: a PreToolUse hook; sub-agents get their own hop
+from segurai.instrument.claude_agent import pre_tool_use
+options = ClaudeAgentOptions(hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_use("assistant", RULES)])]})
+
+# CrewAI: one hook for every agent in the process
+from segurai.instrument.crewai import govern
+govern(rules=RULES)
+```
+
+Each agent gets its own hop in the chain, so the record reads person → agent → action whichever framework ran it. The tests drive the real frameworks with a scripted model.
+
 ## OpenTelemetry
 
 ```python
@@ -299,45 +336,127 @@ segurai judge <session_id> --yes      # judge the session's flagged actions
 
 Verdicts are stored beside Tier 1's findings and shown in `segurai show` and the web view; they never change Tier 1's record. Everything the judge reads from agents and tools is treated as untrusted data, so "this was pre-approved" written by an agent grants nothing. Measure it with `segurai eval-judge` on 50 labeled cases (see [evals/tier2/](evals/tier2/README.md)).
 
+`--votes 2` asks the model twice. When the two answers disagree, the verdict becomes "a person must decide" rather than a coin toss. `segurai label` lets a person label the test cases without seeing the existing answers, and `segurai label-agreement` measures how far two people agree.
+
 ## Web view
 
+One page per request:
+
+- the request and its contract, beside the delegation chain;
+- whether the person was proven or only claimed;
+- every action's findings inline, with the AI review where there is one;
+- the signatures, re-checked each time the page loads.
+
+Other pages cover record integrity, unused permissions, people, and who opened what. Requests can be searched and filtered by person, agent and outcome.
+
+The pages are plain HTML with no scripts. Everything that came from a request is escaped, and every page carries a strict Content-Security-Policy.
+
+Under `segurai serve`, people sign in with an account or the company login (OIDC), and get one of three roles:
+
+- **viewer** sees requests;
+- **auditor** also sees integrity and access, and can download evidence packs;
+- **admin** also manages people.
+
+Sign-in failures are throttled, sessions are kept only as hashes, forms carry CSRF tokens, and every page view is written to the tamper-evident log. `segurai ui --db segurai.db` still opens a local, single-user view.
+
+## Running Segurai
+
 ```bash
-segurai ui --db segurai.db        # then open http://127.0.0.1:8700/
+pip install "segurai[server]"
+segurai init                                                 # a commented segurai.toml and the organisation's key
+segurai users add --email you@acme.example --role admin
+segurai serve                                                # dashboard on http://127.0.0.1:8700/
 ```
 
-One page per session: the request and its contract beside the delegation chain, every action's findings inline, and the signatures re-checked each time the page loads. It is plain HTML with no scripts; everything from a request is escaped, and pages carry a strict Content-Security-Policy. With `SEGURAI_COLLECTOR_TOKEN` set, the browser asks for the token as a password. The collector serves the same pages at `/`.
+`segurai serve` runs everything from one configuration file:
 
-## Deploying a pilot
+- the dashboard;
+- span ingest;
+- the issuer;
+- the gateway;
+- the alert worker;
+- the checkpoint worker.
 
-```bash
-export SEGURAI_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-docker compose -f deploy/compose.yaml up -d --build
+The file is checked strictly. A typo is an error, and so is a secret written in it: secrets come only from environment variables the file names (`..._env`). `segurai config check` validates it, and works while the server is running.
+
+**Docker:** see [deploy/README.md](deploy/README.md). Three commands start it with SQLite, three more with PostgreSQL. CI builds the image and runs a deployment end to end with each, on every push.
+
+**PostgreSQL:** set `database_env = "SEGURAI_DATABASE_URL"` in `segurai.toml`. Records, hashes and audits are identical on SQLite and PostgreSQL, and the whole test suite runs on both. Several servers can share one database without ever forking the log.
+
+## The gateway: agents can't go around it
+
+Agents are given the gateway's address instead of the CRM's (or the billing system's, or any HTTP API's). The gateway holds the real credentials, so an agent has no way to call the system directly. Each request:
+
+1. carries the agent's chain and a fresh signature from that agent's own key (so a copied chain alone is useless), with a 60-second window and a one-time nonce;
+2. is matched to a route that says what it does, for example `DELETE /opportunities/{id}` → *delete one crm.opportunities record, irreversibly*;
+3. is checked against the warrant and the company's rules, recorded before it is sent, and forwarded only if allowed.
+
+```python
+from segurai.gateway import GatewayClient
+
+with segurai.resume(chain_token, holder="crm_agent"):
+    crm = GatewayClient("https://segurai-gateway.internal")
+    crm.request("POST", "/crm/opportunities/4471/archive")    # allowed: forwarded
+    crm.request("DELETE", "/crm/opportunities/4502")          # 403: never reaches the CRM
 ```
 
-The container runs as an unprivileged user on a read-only filesystem, keeps everything in one volume, listens only on localhost (put your TLS proxy in front), and refuses traffic from other machines without a token. Settings come from `SEGURAI_DB`, `SEGURAI_KEY`, `SEGURAI_HOST`, `SEGURAI_PORT` and `SEGURAI_COLLECTOR_TOKEN`. The [pilot runbook](docs/PILOT_RUNBOOK.md) covers the rest: keys, connecting agents, the weekly review and the final report.
+## Who asked, proven
+
+An app that starts agent work for a person sends that person's ID token from the company's login system to the issuer:
+
+```bash
+POST /v1/sessions        Authorization: Bearer <ID token>        {"request": "Archive the deals that went quiet"}
+```
+
+The issuer checks the token's signature against the login system's published keys, its issuer, audience, expiry and email domain. It then mints a root warrant inside the first **ceiling** that matches the person's groups. A ceiling is the most anyone in that group can ever be granted, so no request can ask for more. The response is a chain token that the agent continues with `segurai.resume`.
+
+## Company rules
+
+```toml
+[[policy.rules]]
+name = "nobody deletes payroll"
+targets = ["hr.payroll"]
+operations = ["delete"]
+effect = "deny"
+```
+
+Rules are either **deny** or **limit** (a maximum size, or no irreversible actions), and can be scoped to people, agents, operations or targets. No request or grant can override them. Every version of the rules is written into the tamper-evident log, and each finding names the version in force.
+
+## Alerts, witnesses and evidence packs
+
+- **Alerts** go to Slack, a webhook (signed with HMAC) or email when an action breaks a rule, is blocked, or the log fails its audit. Delivery is retried with backoff. Each alert is queued once and sent by exactly one server, however many share the database.
+- **Witnesses**: checkpoints are also published outside the database, to an append-only file or a webhook. `segurai audit --witness FILE` then catches a rewrite even by someone holding the signing key.
+- **Evidence packs**: `segurai evidence <session>` writes a zip for one request. It contains the records, their log entries, a signed checkpoint, the public key and a readable report. `segurai evidence-verify pack.zip --key org.pub` checks it with nothing else. An auditor needs neither access to the system nor trust in whoever sent it.
 
 ## CLI
 
 ```bash
+segurai demo                  # the sample company, in the browser (demo tamper / demo cover-up)
+segurai init                  # a commented segurai.toml and the organisation's key (--for-docker, --postgres)
+segurai config check          # validate segurai.toml, even while the server runs
+segurai serve                 # run the deployment segurai.toml describes
+segurai users add|list|set    # people who can sign in to the dashboard
 segurai sessions              # list recent sessions
 segurai show <session_id>     # render the delegation tree (--json, --ascii)
 segurai verify <session_id>   # re-check every signature, link and narrowing
 segurai creep <session_id>    # granted vs exercised scope
 segurai report --days 30      # scope-creep report across sessions
+segurai audit                 # check the tamper-evident log (--witness FILE)
+segurai checkpoint            # sign the log's current state (--witness FILE)
+segurai evidence <session_id> # an evidence pack an auditor can check alone
+segurai evidence-verify pack.zip --key org.pub
+segurai backup --out copy.db  # consistent copy of a SQLite database, safe while running
 segurai keygen                # create a signing key
-segurai collect               # receive spans from agents (OTLP/HTTP)
-segurai ui                    # browse sessions in a web page
-segurai backup --out copy.db  # consistent copy of the database, safe while running
-segurai audit                 # check the tamper-evident log
-segurai checkpoint            # sign the log's current state
+segurai collect / ui          # the older single-purpose collector and local web view
 segurai intent "<request>"    # compile a request into a scope contract
 segurai eval-intent ...       # grade the intent compiler on labeled cases
 segurai eval-tier1            # run the Tier 1 scenario suite (no API calls)
-segurai judge <session_id>    # Tier 2: judge a session's flagged actions
+segurai judge <session_id>    # Tier 2: judge a session's flagged actions (--votes 2)
 segurai eval-judge            # grade the judge on labeled cases
+segurai label / label-agreement   # human labels for the judge's cases, and agreement between people
 ```
 
-`--db` picks the database (default `segurai.db`); the key is found beside it.
+`--db` picks the database (default `segurai.db`, or a `postgresql://` URL); the key is found beside it.
 
 ## Design
 
@@ -368,8 +487,8 @@ If that invariant held at every hop, then whatever happened at the leaf was insi
 | M1 | Intent compiler — target met: 91.4% |
 | M2 | Tier 1 check suite — complete: 10/10 caught, 0 false positives |
 | M3 | Public release; ingest existing OpenTelemetry spans with no code changes |
-| M4 | Tier 2 semantic judge — 0 dangerous misses; 47% on ambiguous cases, labels need human review |
-| M5 | Design-partner pilots — deployment kit and runbook ready |
+| M4 | Tier 2 semantic judge — 0 dangerous misses; 47% on ambiguous cases. Next: two people label the hard cases (`segurai label`), then re-measure with `--votes 2` |
+| M5 | Design-partner pilots — deployment, Docker and PostgreSQL ready; next is the partners themselves |
 | M6 | Scope-creep report — built |
 | M7 | Tamper-evident log — built |
 

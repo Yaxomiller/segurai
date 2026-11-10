@@ -54,6 +54,9 @@ _log = logging.getLogger("segurai.alerts")
 
 EVENTS = ("violation", "blocked", "tamper")
 MAX_ATTEMPTS = 8
+#: How long a server holds an alert it is sending before another may try. Far
+#: longer than any channel's timeout, so a slow send is never doubled.
+CLAIM_LEASE = timedelta(minutes=5)
 
 
 class AlertError(Exception):
@@ -292,6 +295,10 @@ class AlertWorker:
         by_name = {c.name: c for c in self.channels}
         sent = failed = 0
         for alert in self.store.due_alerts(limit=50):
+            # Several servers may share one database: claim each alert just
+            # before sending it, so exactly one of them does.
+            if not self.store.claim_alert(alert["id"], alert["next_attempt_at"], CLAIM_LEASE):
+                continue
             channel = by_name.get(alert["channel"])
             if channel is None:          # the channel was removed from the configuration
                 self.store.finish_alert(alert["id"], error="channel no longer configured", give_up=True)

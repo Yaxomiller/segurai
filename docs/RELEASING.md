@@ -40,7 +40,10 @@ That starts [the Release workflow](https://github.com/Yaxomiller/segurai/actions
    still says `0.1.0`. It reads that file on its own rather than importing `segurai`, because the build job
    installs no dependencies;
 3. builds the wheel and source distribution and runs `twine check --strict`;
-4. uploads to PyPI.
+4. uploads to PyPI;
+5. builds the Docker image for amd64 and arm64 and pushes it to `ghcr.io/yaxomiller/segurai`, tagged with the version (`0.4.0`, `0.4`) and `latest`. GitHub's own short-lived token authorises the push, so there is no registry password anywhere.
+
+**The first time an image is published**, GitHub makes the package private. To let anyone pull it, open the package page (your GitHub profile → **Packages** → **segurai**), go to **Package settings** → **Change visibility**, and choose **Public**. This is needed only once.
 
 Then check <https://pypi.org/project/segurai/> and, in a clean environment:
 

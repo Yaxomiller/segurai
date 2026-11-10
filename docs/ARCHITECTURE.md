@@ -195,6 +195,15 @@ Observed chains (plain OpenTelemetry) grant nothing, but their actions count as 
 - Every warrant records a `key_id`, so a failure can say "signed by a different key" instead of just "invalid".
 - An `Authority.verifier("segurai.pub")` can check but never sign — what an auditor should hold.
 
+**Each hop holds its own key.** A warrant names its holder's public key (`holder_key`). Only a root is signed with the organisation's key. Each child is signed with its parent holder's key, so an agent can delegate onward without ever holding the organisation's key. `verify_chain` checks each link against the key named one hop up.
+
+A chain crosses processes as a **chain token** (`sgc1.` + compressed JSON):
+
+- `export_chain()` writes the whole chain, plus the holder's private key only when asked to;
+- `segurai.resume(token, holder="crm_agent")` continues it in another process.
+
+The gateway accepts a chain only *without* its key. A request through the gateway must instead carry a fresh signature from that key. So a copied chain token isn't enough to act; you'd need the key as well.
+
 ---
 
 ## Describing tool calls: ActionSpec
@@ -229,6 +238,9 @@ All optional; `import segurai` pulls in none of them.
 | [`instrument/otel.py`](../src/segurai/instrument/otel.py) | Emits OpenTelemetry spans (`invoke_workflow`, `invoke_agent`, `execute_tool`) carrying the full signed warrant, so the chain appears in any tracing backend. |
 | [`instrument/langgraph.py`](../src/segurai/instrument/langgraph.py) | `agent_node` makes a graph node (function, async function, or compiled subgraph) an agent hop. `ToolGuard` checks every `ToolNode` call before the tool runs. |
 | [`instrument/mcp.py`](../src/segurai/instrument/mcp.py) | `WarrantedClient` checks and records MCP tool calls before they are sent and attaches the warrant. `bind_from_meta` continues the chain inside the MCP server. |
+| [`instrument/openai_agents.py`](../src/segurai/instrument/openai_agents.py) | `govern(agent, rules)` adds a tool input guardrail to every function tool of an agent and of every agent it hands off to. A refused call never runs, and the model is told why. |
+| [`instrument/claude_agent.py`](../src/segurai/instrument/claude_agent.py) | `pre_tool_use(agent, rules)` is a PreToolUse hook. Built-in tools (Read, Write, Bash, Web…) and MCP tools get sensible descriptions by default, and Task sub-agents get their own hop. |
+| [`instrument/crewai.py`](../src/segurai/instrument/crewai.py) | `govern(rules)` registers CrewAI's before-tool-call hook for every agent in the process. CrewAI lets a call through when a hook fails, so this hook fails closed on its own in enforce mode. |
 
 Integrations talk to the runtime through **listeners** ([`runtime.Listener`](../src/segurai/runtime.py)): small hooks called around each session, agent hop and tool call. A listener that crashes is logged and ignored — observability must never break the agent it watches.
 
@@ -271,7 +283,23 @@ Cost: 0.04 ms per checked action at the median, 0.4 ms at the 99th percentile un
 
 ## Storage
 
-[`collector/store.py`](../src/segurai/collector/store.py) — SQLite, one file, three tables: `sessions`, `warrants`, `actions`. Chosen because a file anyone can open beats infrastructure anyone must run. Older database files are upgraded automatically when new columns are added. [`collector/chain.py`](../src/segurai/collector/chain.py) rebuilds and draws the delegation tree.
+[`collector/store.py`](../src/segurai/collector/store.py) holds the evidence (`sessions`, `warrants`, `actions`, `verdicts`, `policies`, `users`, `access_log`), the log (`ledger`, `checkpoints`), and some operational tables (alerts, sign-in sessions, small state). It runs on either of two databases:
+
+- **SQLite** is the default: a file anyone can open, with nothing to run.
+- **PostgreSQL** is used when the store is given a `postgresql://` URL. It suits several servers sharing one database, and managed backups.
+
+The SQL is written once. [`collector/db.py`](../src/segurai/collector/db.py) translates the few things that differ:
+
+- placeholders, and `LIKE` → `ILIKE`;
+- column types;
+- a hidden `ord` column standing in for SQLite's `rowid`;
+- how "did anything change" is detected.
+
+**Writes on PostgreSQL.** An advisory lock is taken before any write that appends to the log, so two servers can never fork the chain. A dropped connection is replaced, but only between transactions. Records, hashes and audits are identical on both databases, and CI runs the whole test suite on each.
+
+**Every write is one transaction**, and it commits or rolls back as a unit. A failure part-way through can't leave a record without its log entry.
+
+Older database files are upgraded automatically when new columns are added. [`collector/chain.py`](../src/segurai/collector/chain.py) rebuilds and draws the delegation tree.
 
 ---
 
@@ -291,6 +319,48 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 
 ---
 
+## A deployment: `segurai serve`
+
+[`serve.py`](../src/segurai/serve.py) runs everything a deployment needs, from one strictly checked [`segurai.toml`](../src/segurai/config.py). In that file, a typo is an error, and so is a secret: secrets come only from environment variables the file names. The pieces are below.
+
+**Dashboard sign-in** ([`collector/auth.py`](../src/segurai/collector/auth.py)).
+
+- People sign in with local accounts (scrypt-hashed passwords, with failures throttled) or the company login, using OIDC with PKCE, state and nonce.
+- There are three roles: viewer, auditor and admin.
+- The session cookie is stored only as a hash. Forms carry CSRF tokens, and form posts from other sites are refused.
+- Every page view and sign-in goes into the tamper-evident log.
+
+**The issuer** ([`issuer.py`](../src/segurai/issuer.py), [`identity.py`](../src/segurai/identity.py)).
+
+- `POST /v1/sessions` takes a person's ID token from a trusted login system.
+- It checks the token: signature against the published keys, asymmetric algorithms only, issuer, audience, expiry and email domain.
+- It mints a root warrant inside the first matching **ceiling**: the most that group can ever be granted.
+- The session records how the person was proven, and every page shows "identity verified" or "claimed".
+
+**The gateway** ([`gateway.py`](../src/segurai/gateway.py)).
+
+- It is a reverse proxy in front of the systems agents act on. It holds their credentials, so agents can't reach them directly.
+- Each request carries the agent's chain and a fresh Ed25519 signature over the method, target, body hash, time and a one-time nonce. A request older than 60 seconds is refused, and so is a reused nonce.
+- A route table turns the request into an action, for example `DELETE /opportunities/{id}` → *delete 1 crm.opportunities, irreversible*.
+- The action is checked against the warrant and the company's rules, and recorded before anything is forwarded. A refusal never reaches the system.
+- Paths are parsed strictly. Duplicate JSON keys are refused, method-override headers are dropped, and redirects are not followed.
+
+**Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny and limit rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force.
+
+**Alerts** ([`alerts.py`](../src/segurai/alerts.py)).
+
+- A worker follows the actions table and queues an alert for each violation, each blocked action, and each failed audit. The queue's unique key means an alert is queued only once.
+- It delivers alerts to Slack, a webhook (HMAC-signed) or email, retrying with backoff up to eight times.
+- With several servers on one database, each alert is claimed just before it is sent, so exactly one server sends it.
+
+**Witnesses** ([`witness.py`](../src/segurai/witness.py)). Signed checkpoints are also published outside the database, to an append-only file or a webhook. `audit(witnessed=...)` then compares the log with what was published. A rewrite is caught even by someone who holds the signing key, provided it rewrites history that was already witnessed.
+
+**Evidence packs** ([`evidence.py`](../src/segurai/evidence.py)). One request is packed into a zip: records, log entries, a checkpoint, the public key, a readable report and a signed manifest. `verify_pack` checks it with nothing but the public key.
+
+**Containers.** [`Dockerfile`](../Dockerfile) and [`deploy/`](../deploy/README.md) run the whole deployment as an unprivileged user, on a read-only filesystem, with no capabilities, with SQLite or PostgreSQL. `deploy/smoke-test.sh` proves a deployment end to end, and CI runs it on every push. Servers bind their ports exclusively ([`_net.py`](../src/segurai/_net.py)). On Windows, the standard library's default would let a second process share a port that is already in use.
+
+---
+
 ## File map
 
 ```
@@ -303,10 +373,23 @@ src/segurai/
   runtime.py           session, agent, delegate, act, tool, configure, listeners
   scenarios.py         the Tier 1 scenario suite (M2)
   report.py            the scope-creep report (M6)
+  policy.py            company rules: deny and limit, versioned
+  identity.py          checking ID tokens from a company login system (OIDC)
+  issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
+  gateway.py           the reverse proxy agents must go through
+  alerts.py            alert queue, worker, Slack / webhook / email channels
+  witness.py           publishing checkpoints outside the database
+  evidence.py          evidence packs, and checking them from the pack alone
+  config.py            segurai.toml, read strictly
+  serve.py             `segurai serve`: one process runs the whole deployment
+  demo.py              `segurai demo`: the sample company, built from real records
   cli.py               the `segurai` command
   _claude.py           the one structured Claude call shared by intent and judge
+  _net.py              HTTP servers that never share a port
   collector/
-    store.py           SQLite storage and migrations
+    store.py           the store: evidence, log, operational tables; migrations
+    db.py              SQLite and PostgreSQL behind one interface
+    auth.py            dashboard accounts, roles, sign-in, company login
     chain.py           tree reconstruction and rendering
     otlp.py            rebuilding warrants, actions and observed chains from received spans
     server.py          the collector's HTTP endpoint
@@ -317,17 +400,22 @@ src/segurai/
     compiler.py        IntentCompiler and the Claude backend
     eval.py            grading the compiler against labeled cases
   judge/
-    judge.py           Judge, Verdict, what the judge is shown, live listener
+    judge.py           Judge, Verdict, what the judge is shown, voting, live listener
     eval.py            grading the judge against labeled cases
+    labelling.py       blind human labelling, and agreement between labellers
   instrument/
     otel.py            OpenTelemetry spans
     langgraph.py       LangGraph nodes and ToolNode
     mcp.py             MCP client and server
+    openai_agents.py   OpenAI Agents SDK tool guardrail
+    claude_agent.py    Claude Agent SDK PreToolUse hook
+    crewai.py          CrewAI before-tool-call hook
+    _hops.py           one delegated warrant per agent, shared by the integrations
 examples/              runnable demos (no API keys needed)
 evals/intent/          the intent compiler's catalog and 50 labeled cases
 evals/tier1/           20 seeded scenarios for the Tier 1 check
 evals/tier2/           50 labeled cases for the Tier 2 judge
-Dockerfile, deploy/    the pilot container and Compose file (see docs/PILOT_RUNBOOK.md)
+Dockerfile, deploy/    the container, Compose files (SQLite / PostgreSQL) and the smoke test
 tests/                 one file per area; see below
 ```
 
@@ -350,17 +438,28 @@ tests/                 one file per area; see below
 | `test_report.py` | unused operations, targets and wildcards with evidence; proposals that only remove; windows; blocked attempts; external grants against observed use; every export format |
 | `test_intent.py`, `test_intent_claude.py`, `test_intent_eval.py` | the catalog check and ceiling; the exact Claude API request, checked offline; the grading rules and the dataset |
 | `test_examples.py` | every example still runs |
+| `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
+| `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
+| `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_policy.py`, `test_alerts.py`, `test_witness.py`, `test_evidence.py` | company rules beat grants; alerts are queued once, retried, and sent by exactly one server; witnessed checkpoints catch a key-holder's rewrite; evidence packs verify alone and reveal tampering |
+| `test_accounts.py`, `test_serve.py`, `test_deploy.py` | sign-in, roles, CSRF, throttling and the access log; a whole deployment from one file; configuration mistakes named; ports never shared |
+| `test_postgres.py` | SQL translation; a failed write leaves nothing; on PostgreSQL, three servers appending at once never fork the log and dropped connections recover safely |
+| `test_openai_agents.py`, `test_claude_agent.py`, `test_crewai.py` | each framework, driven for real with a scripted model, records the right hop and refuses in enforce mode |
+| `test_labelling.py` | blind labelling, Cohen's kappa, and the judge's voting |
+| `test_demo.py` | every demo scene shows what it claims; both tamper scenes are caught |
+
+The whole suite also runs on PostgreSQL (set `SEGURAI_TEST_DATABASE`), and CI does this on every push.
 
 ---
 
 ## Honest limits (what is not done yet)
 
-- **The signing key sits with the agent process.** Fine for development; in production an agent that holds the key could mint itself anything. Moving signing into a separate collector is a later milestone.
-- **Tamper-evidence needs a witness to be complete.** Edits, deletions and reordering are caught by the chain; a wholesale rebuild is caught only if a checkpoint was signed, and a key-holder can still rewrite history that was never witnessed outside the database. Publishing checkpoints to an external transparency log is the remaining step.
-- **Neither the intent compiler nor the judge has been measured live.** Both are built and tested offline. Their eval sets need an Anthropic API key to run, and both were labeled by Claude, so people should review the labels before any score is quoted.
-- **The judge's two-second latency target is unmeasured.** It can only be checked against the live API.
+- **Code that calls `segurai.session` directly holds the organisation's key.** That's fine for development and the demo. In production, start sessions through the issuer: then agent processes hold only their own hop's key, and can't mint themselves a root.
+- **A witness is only as good as where it writes.** Checkpoints can be published to a file or a webhook, and the audit compares against them. The guarantee depends on the operator making that destination append-only, and on someone checking it. An integration with a public transparency log (such as Sigstore's Rekor) isn't built.
+- **The judge's labels are a model's, not people's.** Both evals have been run live: the compiler meets its target, the judge doesn't yet (47% on ambiguous cases against 85%). Both answer keys were drafted by Claude. The labelling tool is ready, but the human labels haven't been collected.
+- **The gateway speaks HTTP.** Agents that reach systems some other way, such as a database driver, SSH or a vendor SDK with its own transport, need those paths closed or proxied separately. Every API also needs its routes written; a request no route describes is refused.
 - **The report sees one window.** Permissions needed only by rare jobs look unused in a short window; confidence reflects how much activity was seen, not certainty. Identity-provider grants arrive as an exported file, not through live connectors.
-- **The collector is one process on SQLite.** Right for a pilot. A busy, multi-team deployment needs a production web server and a database built for many concurrent writers.
+- **The HTTP servers are the standard library's threaded servers**, behind your TLS proxy. That's right for a pilot's traffic, and PostgreSQL lets several run side by side, but nothing has been load-tested at scale.
 - **Evidence is reported by the agent.** Conditions are checked against what the agent says about the records it touched. An agent that misreports, by bug or on purpose, can pass a check. Cross-checking evidence against the systems themselves is future work.
 - **Plain-English constraints still need a Check to be tested.** The intent compiler writes Checks only where the catalog lists the evidence; any other condition can only be weighed by the Tier 2 judge.
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
