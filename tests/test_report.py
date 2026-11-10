@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import pytest
 
+import segurai
 from segurai import Authority, Scope, Store
 from segurai.models import ActionRecord, utcnow
 from segurai.report import Grant, build_report, load_grants
@@ -185,3 +186,30 @@ def test_proposed_limits_round_up_to_readable_numbers(value, expected):
     from segurai.report import _nice_ceiling
 
     assert _nice_ceiling(value) == expected
+
+
+def test_a_delegating_agent_is_credited_with_what_it_passed_on():
+    """Found while building the demo: an assistant that only delegates was reported
+    as using nothing, and the report recommended removing access the chain needs."""
+    segurai.configure(store=":memory:", authority=segurai.Authority())
+
+    @segurai.agent("assistant")
+    def assistant():
+        crm_agent()
+
+    @segurai.agent("crm_agent", scope=Scope.of(targets=["crm.opportunities"]))
+    def crm_agent():
+        segurai.act("archive", "crm.opportunities", scale=3)
+
+    granted = Scope.of(operations=["read", "archive", "delete"], targets=["crm.*"], max_scale=50)
+    with segurai.session(principal="sarah@company.com", request="tidy up", scope=granted):
+        assistant()
+
+    report = build_report(segurai._runtime.store, since=utcnow() - timedelta(days=1))
+    by_name = {r.identity: r for r in report.identities}
+    middle = by_name["assistant"]
+    assert middle.used_operations == {"archive": 1}           # used by passing it on
+    assert "archive" in middle.recommended.operations         # so the advice keeps it
+    assert "delete" in middle.unused_operations               # genuinely unused stays unused
+    assert by_name["crm_agent"].used_operations == {"archive": 1}
+    assert by_name["sarah@company.com (session root)"].used_operations == {"archive": 1}

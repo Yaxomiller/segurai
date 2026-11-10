@@ -6,6 +6,7 @@
     segurai creep <session_id>       granted vs exercised scope
     segurai report                   scope-creep report across sessions (M6)
     segurai keygen                   create a signing key
+    segurai demo                     a made-up company, real records, in the browser
     segurai audit                    check the tamper-evident log
     segurai checkpoint               sign the log's current state
     segurai collect                  receive spans from agents over OTLP/HTTP
@@ -274,6 +275,64 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return _serve(args, "ui")
 
 
+def cmd_demo(args: argparse.Namespace) -> int:
+    """Build the demo company and open the dashboard, or tamper with it.
+
+    Every record is produced by the real library; the company, people,
+    contracts and AI reviews are made up and labelled as such (see demo.py).
+    """
+    from . import demo
+
+    folder = Path(args.dir)
+    db, _, pub = demo.demo_paths(folder)
+
+    if args.action in ("tamper", "cover-up"):
+        if not db.exists():
+            print(f"No demo in {folder}/ yet. Run `segurai demo` first.")
+            return 1
+        if args.action == "tamper":
+            try:
+                action_id = demo.tamper(folder)
+            except ValueError as exc:
+                print(f"Nothing to tamper with: {exc}")
+                return 1
+            print(f"Rewrote {action_id}: the 400-record permanent delete is now a harmless 4-record")
+            print("archive that broke no rule, and the AI review that flagged it is deleted.")
+            print("The dashboard now calls the request clean. Reload any page: the record log disagrees.")
+        else:
+            action_id = demo.cover_up(folder)
+            print(f"Rewrote {action_id}, deleted its review, AND rebuilt the hash chain to match.")
+            print("The chain now agrees with itself. Reload /audit: the signed checkpoint still disagrees.")
+        return 0
+
+    summary = demo.seed(folder)
+    print(f"Built the demo company in {folder}/ by running real agent code:")
+    print(f"  {summary.sessions} requests, {summary.actions} agent actions, "
+          f"{summary.flagged} went beyond the request, {summary.blocked} stopped")
+    print("  every warrant signed, every action checked, every record hash-chained and checkpointed")
+    print()
+    print("While it runs, in a second terminal (same folder):")
+    print("  segurai demo tamper      quietly rewrite the incident")
+    print("  segurai demo cover-up    ...and rebuild the chain to hide it")
+    print("  segurai demo             start again, untouched")
+    print()
+    if args.no_serve:
+        return 0
+
+    url = f"http://127.0.0.1:{args.port}/"
+    if not args.no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    serve_args = argparse.Namespace(db=str(db), key=str(pub), host="127.0.0.1", port=args.port,
+                                    token=None, insecure_no_token=False)
+    try:
+        return _serve(serve_args, "demo")
+    except OSError as exc:
+        print(f"Could not listen on port {args.port} ({exc}). Try: segurai demo --port 8701")
+        return 1
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Copy the database safely, even while the collector is writing to it."""
     out = Path(args.out)
@@ -500,6 +559,16 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--token", default=None,
                    help="require this password (prefer the SEGURAI_COLLECTOR_TOKEN variable)")
     s.set_defaults(func=cmd_ui)
+
+    s = sub.add_parser("demo", help="a made-up company with real records, in the browser")
+    s.add_argument("action", nargs="?", default="start", choices=["start", "tamper", "cover-up"],
+                   help="start (default) builds the demo and opens the dashboard; tamper and "
+                        "cover-up rewrite the incident to show the audit catching it")
+    s.add_argument("--dir", default="segurai-demo", help="where the demo's files live")
+    s.add_argument("--port", type=int, default=8700, help="port for the dashboard (default 8700)")
+    s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    s.add_argument("--no-serve", action="store_true", help="build the demo database and stop")
+    s.set_defaults(func=cmd_demo)
 
     s = sub.add_parser("backup", help="copy the database safely while it is in use")
     s.add_argument("--out", required=True, help="where to write the copy")

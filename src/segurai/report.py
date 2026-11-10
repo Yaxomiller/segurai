@@ -335,13 +335,24 @@ def build_report(store: Store, since: datetime, until: datetime | None = None,
                 tally(_identity(w, sess.principal), "warrants").grant(w.scope)
                 tally(_identity(w, sess.principal), "warrants").sessions.add(sess.session_id)
 
-        root = next((w for w in warrants.values() if w.parent_id is None), None)
         for a in actions:
             w = warrants.get(a.warrant_id)
             if not observed and w is not None:
-                tally(_identity(w, sess.principal), "warrants").use(a)
-                if root is not None and root.warrant_id != w.warrant_id:
-                    tally(_identity(root, sess.principal), "warrants").use(a)
+                # Credit the agent that acted AND every hop above it, up to the
+                # person. A delegating agent uses its permission by passing it
+                # on: take the assistant's CRM access away and the CRM agent
+                # below it can no longer receive any. Crediting only the actor
+                # (as this once did) reported a pure delegator as using nothing,
+                # and recommended removing access the chain depends on.
+                credited: set[str] = set()
+                hop: Warrant | None = w
+                while hop is not None and hop.warrant_id not in credited:
+                    credited.add(hop.warrant_id)
+                    identity = _identity(hop, sess.principal)
+                    if identity not in credited:          # an agent recursing into itself
+                        credited.add(identity)
+                        tally(identity, "warrants").use(a)
+                    hop = warrants.get(hop.parent_id) if hop.parent_id else None
             for g in external.get(a.actor, []):
                 tally(a.actor, g.source).use(a)
 

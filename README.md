@@ -10,6 +10,8 @@
 >
 > The trail from the action back to the human is broken. That is what this fixes.
 
+**See it in one minute:** `pip install segurai`, then `segurai demo`. That builds a made-up company from real records and opens the dashboard, including the scene where an insider rewrites the evidence and gets caught. Talk tracks for investors and engineers: [docs/DEMO.md](docs/DEMO.md).
+
 Install it and import it as `segurai`. The signed grant that each agent hop carries is called a **warrant** — a narrow, written-down, traceable permission, like a search warrant — and that word is used throughout the code and the docs.
 
 New here? [docs/WHY.md](docs/WHY.md) is the engineering write-up — the problem, the designs that don't work, and the parts that were hard. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how everything fits together in plain language.

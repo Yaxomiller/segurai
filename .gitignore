@@ -12,3 +12,6 @@ venv/
 # Signing keys created by segurai.configure()/segurai keygen
 *.key
 *.pub
+
+# Local editor/assistant settings
+.claude/

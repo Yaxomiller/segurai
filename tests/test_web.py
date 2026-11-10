@@ -44,7 +44,7 @@ def test_index_lists_sessions_and_their_verdicts():
     page = index_page(_store())
     assert "clean up our old sales records" in page
     assert f"/sessions/{sid}" in page
-    assert "sarah@company.com" in page and "1 violation(s)" in page
+    assert "sarah@company.com" in page and "1 violation &middot; went ahead" in page
 
 
 def test_session_page_shows_chain_findings_scope_and_verification():

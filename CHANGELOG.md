@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-11-10
+
+The demo, and a dashboard worth showing.
+
+### `segurai demo`
+
+- One command builds **Acme Co.**, a made-up company, by running real Segurai code through ten agent requests, then opens the dashboard. No API key, no internet. Every record is real (signed warrants, Tier 1 checks, enforce mode, the hash-chained log, a signed checkpoint); the company, people, compiled contracts and AI reviews are made up or pre-written, and labelled as such on every page.
+- The scenarios each show one thing: a clean job, the 400-record incident, a refund stopped in enforce mode, a prompt injection, a judgement call where the AI review cuts a false alarm, missing evidence, unused standing access, and agents seen through plain OpenTelemetry.
+- `segurai demo tamper` rewrites the incident as a careful insider would: the record becomes a harmless archive and its AI review is deleted, so the dashboard calls it clean. The record-integrity check catches it, and the request is marked *altered after the fact*.
+- `segurai demo cover-up` also rebuilds the hash chain so it agrees with itself. Only the signed checkpoint still catches it.
+- `docs/DEMO.md`: a three-minute talk track for investors, a six-minute one for engineers, and the questions each will ask.
+
+### Dashboard
+
+- A redesigned web view: headline numbers, a plain-English "what happened" for every flagged action above the exact findings, the delegation chain drawn from the person down, and two new pages, **Record integrity** (`/audit`) and **Permissions** (`/permissions`).
+- Every page carries the record-integrity status, and a request whose records were changed after the fact says so on its own page.
+- Still no JavaScript on any page, under the same strict Content-Security-Policy.
+
+### Fixed
+
+- **The permissions report credited only the agent that acted**, plus the person at the top. An agent that delegated its work, like an assistant handing a job to a CRM agent, was reported as using nothing, and the report recommended removing access the chain depends on. Every hop on the path is now credited. Found while building the demo.
+
 ## [0.2.0] — 2026-11-05
 
 The tamper-evident log, and the first live measurements of both model-dependent pieces.

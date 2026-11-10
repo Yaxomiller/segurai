@@ -42,7 +42,7 @@ from urllib.parse import unquote
 from ..authority import Authority
 from .otlp import IngestReport, UnsupportedEncoding, decode_request, ingest
 from .store import Store
-from .web import CSP, index_page, session_page
+from .web import CSP, audit_page, index_page, permissions_page, session_page
 
 __all__ = ["CollectorServer", "DEFAULT_MAX_BODY"]
 
@@ -176,7 +176,11 @@ class _Handler(BaseHTTPRequestHandler):
                        extra_headers={"WWW-Authenticate": 'Basic realm="segurai", charset="UTF-8"'})
             return
         if path == "/":
-            self._send_page(200, index_page(self.server.store))
+            self._send_page(200, index_page(self.server.store, verifier=self.server.verifier))
+        elif path == "/audit":
+            self._send_page(200, audit_page(self.server.store, self.server.verifier))
+        elif path == "/permissions":
+            self._send_page(200, permissions_page(self.server.store, self.server.verifier))
         elif path.startswith("/sessions/"):
             session_id = unquote(path[len("/sessions/"):])
             page = session_page(self.server.store, session_id, self.server.verifier)
