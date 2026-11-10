@@ -51,11 +51,11 @@ from typing import Any, Callable, ContextManager, Iterator, Mapping, TypeVar
 from .actions import ActionSpec, ActionSpecError
 from .authority import DEFAULT_TTL, Authority
 from .collector.store import Store
-from .context import bind_warrant, current_warrant
+from .context import bind_warrant, current_warrant, import_chain
 from .models import NON_MUTATING, ActionRecord, Finding, Scope, Warrant, utcnow
 
 __all__ = [
-    "Mode", "configure", "session", "agent", "delegate", "act", "tool", "tool_span",
+    "Mode", "configure", "session", "agent", "delegate", "resume", "act", "tool", "tool_span",
     "check_tool_call", "ViolationError", "Session", "Listener", "add_listener",
     "remove_listener",
 ]
@@ -312,6 +312,37 @@ def delegate(holder: str, scope: Scope | None = None, ttl: timedelta | None = No
     child = authority.attenuate(parent, holder=holder, scope=scope, ttl=ttl)
     store.put_warrant(child)
     with bind_warrant(child), _rt.hooks("agent_scope", child):
+        yield child
+
+
+@contextmanager
+def resume(token: str, holder: str | None = None, scope: Scope | None = None,
+           ttl: timedelta | None = None) -> Iterator[Warrant]:
+    """Continue a chain that was handed over from another process.
+
+    ``token`` is a chain token (:func:`segurai.export_chain`), usually with the
+    sender's holder key inside. The whole chain is verified against the
+    organisation's public key - this process never needs the private one -
+    then stored, and its leaf becomes the current warrant. With ``holder``,
+    a child for this process is delegated from the leaf and bound instead,
+    which is what a worker picking up a job should do:
+
+        with segurai.resume(job.token, holder="billing_worker"):
+            segurai.act("refund", "billing.refunds", amount=12)
+
+    Raises :class:`segurai.ChainError` for a forged, altered, widened or
+    expired chain, and ``ValueError`` for a token that cannot be read.
+    """
+    store, authority = _rt.ensure()
+    chain, key = import_chain(token)
+    leaf = authority.adopt(chain, key)
+    for w in chain:
+        store.put_warrant(w)
+    if holder is None:
+        with bind_warrant(leaf), _rt.hooks("agent_scope", leaf):
+            yield leaf
+        return
+    with delegate(holder, scope=scope, ttl=ttl, parent=leaf) as child:
         yield child
 
 

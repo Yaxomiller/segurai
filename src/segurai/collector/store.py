@@ -161,6 +161,10 @@ _ADDED_COLUMNS = [
     ("warrants", "key_id", "TEXT"),
     ("actions", "blocked", "INTEGER NOT NULL DEFAULT 0"),
     ("actions", "findings_json", "TEXT"),
+    # 0.4: the holder's public key, which signs the warrants it delegates.
+    ("warrants", "holder_key", "BLOB"),
+    # 0.4: who the person behind a session was proven to be (identity.py).
+    ("sessions", "identity_json", "TEXT"),
 ]
 
 class SessionRow:
@@ -457,6 +461,9 @@ class Store:
             "depth": w.depth,
             "signature": w.signature,
             "key_id": w.key_id,
+            # Left out when absent, so the row hashes as it would have before
+            # holder keys existed (see ledger.LATER_COLUMNS).
+            **({"holder_key": w.holder_key} if w.holder_key is not None else {}),
         }, kind="warrant", ref_id=w.warrant_id)
 
     def get_warrant(self, warrant_id: str) -> Warrant | None:
@@ -654,6 +661,7 @@ def _row_to_warrant(row: sqlite3.Row) -> Warrant:
         depth=row["depth"],
         key_id=row["key_id"],
         signature=row["signature"],
+        holder_key=bytes(row["holder_key"]) if row["holder_key"] is not None else None,
     )
 
 

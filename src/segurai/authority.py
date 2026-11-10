@@ -10,13 +10,33 @@ unexpired, and no wider than its parent. If that holds, then whatever the leaf
 did was within what the root principal granted - which is the question nobody
 can currently answer.
 
-Keys
-----
-An Authority holds a private key (it can sign and verify) or only a public key
-(it can verify, nothing else - what an auditor should hold). Keys can be saved
-to and loaded from PEM files, which is what lets ``segurai verify`` check
-signatures made in an earlier run:
+Two kinds of key
+----------------
+**The organisation's key** signs root warrants - the grant made when a person
+asks for something. Whoever holds it can grant anything, so in a deployment it
+lives in one place (the Segurai server's issuer), never inside an agent.
 
+**Holder keys** let an agent hand work on without that key. Each warrant can
+name a public key belonging to its holder (``Warrant.holder_key``); the holder
+signs the warrants it delegates with the matching private key. A verifier then
+checks every hop:
+
+    root      signed by the organisation's key
+    child     signed by the key its PARENT names (or by the organisation's key)
+    every hop no wider than the one above it
+
+So an agent can delegate, but only ever narrower - and an agent that does not
+hold the organisation's key cannot mint a root, which is exactly what makes
+the gateway (gateway.py) mean something: a warrant it accepts traces back to a
+grant the organisation actually made.
+
+An Authority holds the organisation's private key (it can issue roots), or
+only its public key (it can verify, and delegate from warrants whose holder
+keys it was given). Holder private keys are kept in memory per warrant and
+dropped once that warrant expires.
+
+Keys on disk
+------------
     Authority.load_or_create("segurai.key")     # private key, created if missing
     Authority.verifier("segurai.pub")           # public key only
 
@@ -28,6 +48,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,7 +62,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from .models import Scope, Warrant, utcnow
 
-__all__ = ["Authority", "ChainError", "verify_chain", "DEFAULT_TTL"]
+__all__ = ["Authority", "ChainError", "verify_chain", "DEFAULT_TTL", "key_id_of", "raw_public"]
 
 #: How long a warrant stays valid when no ttl is given.
 DEFAULT_TTL = timedelta(hours=1)
@@ -55,25 +76,50 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
+def raw_public(key: Ed25519PublicKey) -> bytes:
+    """The 32 raw bytes of a public key - the form a warrant carries."""
+    return key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+
+def key_id_of(public: Ed25519PublicKey | bytes) -> str:
+    """A short, stable name for a public key: the start of its SHA-256 fingerprint."""
+    raw = public if isinstance(public, bytes) else raw_public(public)
+    return "key_" + hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _public_from_raw(raw: bytes) -> Ed25519PublicKey:
+    try:
+        return Ed25519PublicKey.from_public_bytes(raw)
+    except ValueError as exc:
+        raise ChainError(f"not an Ed25519 public key ({len(raw)} bytes)") from exc
+
+
 class Authority:
-    """Holds the signing key and mints warrants.
+    """Holds keys and mints, delegates and verifies warrants.
 
-    In a deployment this lives in the collector, not in the agent process - an
-    agent that could mint its own warrants could grant itself anything. For
-    local development an in-process key is fine.
-
-    ``Authority()`` generates a fresh key that lives only in memory.
+    ``Authority()`` generates a fresh organisation key that lives only in
+    memory - right for tests and a first try. ``holder_keys=False`` turns off
+    per-warrant holder keys, so every warrant is signed by the organisation's
+    key as in versions before 0.4.
     """
 
     def __init__(self, private_key: Ed25519PrivateKey | None = None, *,
-                 public_key: Ed25519PublicKey | None = None):
+                 public_key: Ed25519PublicKey | None = None, holder_keys: bool = True):
         if private_key is None and public_key is None:
             private_key = Ed25519PrivateKey.generate()
         self._key = private_key
         self._public = private_key.public_key() if private_key is not None else public_key
-        raw = self._public.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        # A short, stable name for this key: the start of its SHA-256 fingerprint.
-        self._key_id = "key_" + hashlib.sha256(raw).hexdigest()[:16]
+        self._key_id = key_id_of(self._public)
+        self.holder_keys = holder_keys
+        self._lock = threading.Lock()
+        # warrant id -> (that warrant holder's PRIVATE key, warrant expiry).
+        # Lets this process delegate from warrants it minted or was handed.
+        self._holder_private: dict[str, tuple[Ed25519PrivateKey, datetime]] = {}
+        # holder key id -> (public key, the warrant naming it, expiry). Only
+        # filled from warrants this authority minted or verified as part of a
+        # whole chain, so trusting a key here never skips a narrowing check.
+        self._trusted: dict[str, tuple[Ed25519PublicKey, str, datetime]] = {}
+        self._writes = 0
 
     # ---- identity -------------------------------------------------------
 
@@ -87,8 +133,12 @@ class Authority:
 
     @property
     def can_sign(self) -> bool:
-        """False for a verify-only authority built from a public key."""
+        """True when this authority holds the organisation's private key."""
         return self._key is not None
+
+    def public_only(self) -> "Authority":
+        """A verify-only copy: the same public key, none of the private ones."""
+        return Authority(public_key=self._public, holder_keys=self.holder_keys)
 
     # ---- keys on disk ---------------------------------------------------
 
@@ -129,6 +179,13 @@ class Authority:
             raise ValueError(f"{path} does not hold an Ed25519 public key")
         return cls(public_key=key)
 
+    @classmethod
+    def from_public_pem(cls, pem: bytes) -> "Authority":
+        key = serialization.load_pem_public_key(pem)
+        if not isinstance(key, Ed25519PublicKey):
+            raise ValueError("not an Ed25519 public key")
+        return cls(public_key=key)
+
     def save(self, path: str | Path) -> Path:
         """Write the private key to ``path`` and the public key beside it as ``.pub``."""
         path = Path(path)
@@ -154,6 +211,60 @@ class Authority:
             fh.write(pem)
         path.with_suffix(".pub").write_bytes(self.public_key_pem())
 
+    # ---- holder keys ----------------------------------------------------
+
+    def _remember(self, w: Warrant, private: Ed25519PrivateKey | None) -> None:
+        """Keep ``w``'s holder key: trusted always, private too when we have it."""
+        if w.holder_key is None:
+            return
+        public = _public_from_raw(w.holder_key)
+        with self._lock:
+            self._trusted[key_id_of(w.holder_key)] = (public, w.warrant_id, w.expires_at)
+            if private is not None:
+                self._holder_private[w.warrant_id] = (private, w.expires_at)
+            self._writes += 1
+            if self._writes % 256 == 0:
+                self._prune_locked()
+
+    def _prune_locked(self) -> None:
+        """Forget keys of warrants that have expired: nothing can delegate from them now."""
+        now = utcnow()
+        self._holder_private = {k: v for k, v in self._holder_private.items() if v[1] > now}
+        self._trusted = {k: v for k, v in self._trusted.items() if v[2] > now}
+
+    def holder_private_key(self, warrant_id: str) -> Ed25519PrivateKey | None:
+        """The private holder key for a warrant, if this process holds it."""
+        with self._lock:
+            entry = self._holder_private.get(warrant_id)
+        return entry[0] if entry else None
+
+    def adopt(self, chain: list[Warrant], private_key: bytes | None = None, *,
+              allow_expired: bool = False) -> Warrant:
+        """Accept a chain handed over from elsewhere; return its leaf.
+
+        The whole chain is verified first (root signed by this organisation,
+        every hop signed by its parent's key and no wider). Then every holder
+        key in it is trusted, and ``private_key`` - the leaf holder's private
+        key, when it travelled with the chain - is kept, so this process can
+        delegate from the leaf.
+        """
+        verify_chain(chain, self, allow_expired=allow_expired)
+        leaf = chain[-1]
+        private = None
+        if private_key is not None:
+            private = Ed25519PrivateKey.from_private_bytes(private_key)
+            if leaf.holder_key is None or raw_public(private.public_key()) != leaf.holder_key:
+                raise ChainError("the key that came with the chain is not its leaf holder's key")
+        for w in chain:
+            self._remember(w, private if w is leaf else None)
+        return leaf
+
+    def _new_holder(self) -> tuple[Ed25519PrivateKey | None, bytes | None]:
+        if not self.holder_keys:
+            return None, None
+        private = Ed25519PrivateKey.generate()
+        return private, raw_public(private.public_key())
+
     # ---- minting --------------------------------------------------------
 
     def issue_root(
@@ -165,8 +276,16 @@ class Authority:
         ttl: timedelta = DEFAULT_TTL,
         now: datetime | None = None,
     ) -> Warrant:
-        """Mint the root warrant for a session, from a human request."""
+        """Mint the root warrant for a session, from a human request.
+
+        Needs the organisation's private key: a root is a grant on the
+        organisation's behalf.
+        """
+        if self._key is None:
+            raise ChainError("this authority holds only a public key and cannot sign a root "
+                             "warrant: roots are issued by the holder of the organisation's key")
         now = now or utcnow()
+        private, public = self._new_holder()
         w = Warrant(
             warrant_id=_new_id("wrt"),
             session_id=session_id,
@@ -178,8 +297,11 @@ class Authority:
             parent_id=None,
             depth=0,
             key_id=self.key_id,
+            holder_key=public,
         )
-        return self._sign(w)
+        w = w.with_signature(self._key.sign(w.signing_bytes()))
+        self._remember(w, private)
+        return w
 
     def attenuate(
         self,
@@ -195,6 +317,10 @@ class Authority:
         leave fields unspecified (they inherit) and must otherwise be a subset;
         widening raises :class:`ChainError` rather than silently clamping,
         because a caller trying to widen has a bug worth surfacing.
+
+        The child is signed with the parent's holder key when this process
+        holds it, otherwise with the organisation's key; with neither, there
+        is nothing to delegate with and :class:`ChainError` is raised.
         """
         now = now or utcnow()
         # Step 1: the parent must be genuine and still valid.
@@ -211,6 +337,19 @@ class Authority:
         # Step 3: a child may never outlive its parent.
         expires = parent.expires_at if ttl is None else min(now + ttl, parent.expires_at)
 
+        # Step 4: sign with the parent holder's key, or fall back to the org key.
+        signer = self.holder_private_key(parent.warrant_id)
+        if signer is not None:
+            signing_key_id = key_id_of(signer.public_key())
+        elif self._key is not None:
+            signer, signing_key_id = self._key, self.key_id
+        else:
+            raise ChainError(
+                f"cannot delegate from {parent.warrant_id}: this process holds neither its holder "
+                f"key nor the organisation's key. Pass the chain with its key (export_chain)."
+            )
+
+        private, public = self._new_holder()
         w = Warrant(
             warrant_id=_new_id("wrt"),
             session_id=parent.session_id,
@@ -221,12 +360,19 @@ class Authority:
             expires_at=expires,
             parent_id=parent.warrant_id,
             depth=parent.depth + 1,
-            key_id=self.key_id,
+            key_id=signing_key_id,
+            holder_key=public,
         )
-        return self._sign(w)
+        w = w.with_signature(signer.sign(w.signing_bytes()))
+        self._remember(w, private)
+        return w
+
+    def _sign(self, w: Warrant) -> Warrant:
+        """Sign ``w`` exactly as given with the organisation's key (tests and tooling)."""
+        return w.with_signature(self.sign_bytes(w.signing_bytes()))
 
     def sign_bytes(self, data: bytes) -> bytes:
-        """Sign arbitrary bytes with this key.
+        """Sign arbitrary bytes with the organisation's key.
 
         Used for statements that are not warrants - the tamper-evident log's
         checkpoints (see collector/ledger.py).
@@ -236,19 +382,39 @@ class Authority:
         return self._key.sign(data)
 
     def verify_bytes(self, signature: bytes, data: bytes) -> None:
-        """Raise :class:`ChainError` unless ``signature`` is this key's over ``data``."""
+        """Raise :class:`ChainError` unless ``signature`` is the organisation key's over ``data``."""
         try:
             self._public.verify(signature, data)
         except InvalidSignature as exc:
             raise ChainError("the signature does not match this key") from exc
 
-    def _sign(self, w: Warrant) -> Warrant:
-        return w.with_signature(self.sign_bytes(w.signing_bytes()))
+    # ---- verifying ------------------------------------------------------
 
     def verify(self, w: Warrant) -> None:
-        """Raise :class:`ChainError` if the signature does not check out."""
+        """Check one warrant's signature. Raises :class:`ChainError`.
+
+        Warrants signed by the organisation's key verify on their own. A
+        warrant signed by a holder key verifies only when this authority
+        already trusts that key - because it minted the parent, or verified
+        the chain the parent came in - and the key belongs to this warrant's
+        own parent. Anything else needs the whole chain: see
+        :func:`verify_chain`, which also proves every hop narrowed.
+        """
         if w.signature is None:
             raise ChainError(f"warrant {w.warrant_id} is unsigned")
+        if w.key_id not in (None, self.key_id):
+            with self._lock:
+                trusted = self._trusted.get(w.key_id)
+            if trusted is not None:
+                public, owner, _ = trusted
+                if w.parent_id != owner:
+                    raise ChainError(f"warrant {w.warrant_id} is signed by {w.key_id}, which belongs "
+                                     f"to {owner}, not to its parent {w.parent_id}")
+                try:
+                    public.verify(w.signature, w.signing_bytes())
+                except InvalidSignature as exc:
+                    raise ChainError(f"warrant {w.warrant_id} has an invalid signature") from exc
+                return
         try:
             self._public.verify(w.signature, w.signing_bytes())
         except InvalidSignature as exc:
@@ -256,6 +422,27 @@ class Authority:
             if w.key_id and w.key_id != self.key_id:
                 hint = f" (it names signing key {w.key_id}; checked against {self.key_id})"
             raise ChainError(f"warrant {w.warrant_id} has an invalid signature{hint}") from exc
+
+
+def _verify_hop(w: Warrant, parent: Warrant | None, authority: Authority) -> None:
+    """Check one hop's signature against the key that is allowed to have made it."""
+    if w.signature is None:
+        raise ChainError(f"warrant {w.warrant_id} is unsigned")
+    if parent is not None and parent.holder_key is not None and w.key_id == key_id_of(parent.holder_key):
+        try:
+            _public_from_raw(parent.holder_key).verify(w.signature, w.signing_bytes())
+        except InvalidSignature as exc:
+            raise ChainError(f"warrant {w.warrant_id} has an invalid signature "
+                             f"(checked against its parent's holder key {w.key_id})") from exc
+        return
+    # Roots, and children delegated with the organisation's own key.
+    try:
+        authority.public_key.verify(w.signature, w.signing_bytes())
+    except InvalidSignature as exc:
+        hint = ""
+        if w.key_id and w.key_id != authority.key_id:
+            hint = f" (it names signing key {w.key_id}; checked against {authority.key_id})"
+        raise ChainError(f"warrant {w.warrant_id} has an invalid signature{hint}") from exc
 
 
 def verify_chain(
@@ -266,9 +453,11 @@ def verify_chain(
 ) -> None:
     """Validate an ordered root-to-leaf chain. Raises :class:`ChainError`.
 
-    ``authority`` is used to check signatures. Pass ``None`` to check only the
-    structure (links, depths, attenuation) when no key is available - weaker,
-    because a forger can make a structurally perfect chain.
+    ``authority`` holds the organisation's public key: the root must be signed
+    by it, and each later hop by its parent's holder key or by it. Pass
+    ``None`` to check only the structure (links, depths, attenuation) when no
+    key is available - weaker, because a forger can make a structurally
+    perfect chain.
 
     ``allow_expired`` exists because audits happen long after the fact - when
     reconstructing history you care that the chain was valid *then*, not that
@@ -285,25 +474,29 @@ def verify_chain(
         raise ChainError(f"root warrant has non-zero depth: {root.depth}")
 
     for i, w in enumerate(chain):
+        parent = chain[i - 1] if i else None
+        # The link comes first: a hop spliced under the wrong parent is
+        # reported as exactly that, rather than as the bad signature it
+        # also produces (its parent names a different holder key).
+        if parent is not None:
+            if w.parent_id != parent.warrant_id:
+                raise ChainError(
+                    f"broken link at depth {i}: {w.warrant_id} claims parent "
+                    f"{w.parent_id}, chain has {parent.warrant_id}"
+                )
+            if w.depth != parent.depth + 1:
+                raise ChainError(f"depth mismatch at {w.warrant_id}: {w.depth} after {parent.depth}")
+
         if authority is not None:
-            authority.verify(w)
+            _verify_hop(w, parent, authority)
 
         if not allow_expired and w.is_expired(now):
             raise ChainError(f"warrant {w.warrant_id} expired at {w.expires_at.isoformat()}")
 
-        if i == 0:
+        if parent is None:
             continue
 
         # Every rule below compares this hop with the one above it.
-        parent = chain[i - 1]
-
-        if w.parent_id != parent.warrant_id:
-            raise ChainError(
-                f"broken link at depth {i}: {w.warrant_id} claims parent "
-                f"{w.parent_id}, chain has {parent.warrant_id}"
-            )
-        if w.depth != parent.depth + 1:
-            raise ChainError(f"depth mismatch at {w.warrant_id}: {w.depth} after {parent.depth}")
         if w.session_id != parent.session_id:
             raise ChainError(f"session mismatch at {w.warrant_id}")
         if w.root_principal != parent.root_principal:
@@ -314,3 +507,4 @@ def verify_chain(
         ok, reason = w.scope.is_subset_of(parent.scope)
         if not ok:
             raise ChainError(f"attenuation violated at {w.warrant_id}: {reason}")
+

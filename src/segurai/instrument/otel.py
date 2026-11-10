@@ -11,10 +11,12 @@ Span names follow the OpenTelemetry GenAI semantic conventions:
     @segurai.agent(name)   ->  "invoke_agent <name>"
     tool call / act()      ->  "execute_tool <tool name>"
 
-Each span also carries warrant's own attributes under the "warrant." prefix.
+Each span also carries Segurai's own attributes under the "warrant." prefix.
 Together they hold the whole signed warrant - id, parent, depth, scope, key
-id and signature - so a collector that receives only the spans can rebuild
-the chain and re-check every signature itself.
+id, holder key and signature - plus ``warrant.chain``, the chain from the
+root down to it (a chain token without any private key). So a collector that
+receives only the spans can rebuild the chain and re-check every signature
+itself, whatever order the spans arrive in.
 
 Usage:
 
@@ -43,13 +45,13 @@ except ImportError as exc:  # pragma: no cover - only without the optional extra
     ) from exc
 
 from .._version import __version__
-from ..context import export_warrant, import_warrant
+from ..context import export_chain, import_chain
 from ..models import ActionRecord, Warrant
 from ..runtime import Listener, Session, add_listener, remove_listener
 
 __all__ = [
     "enable", "disable", "OtelListener", "warrant_attributes", "action_attributes",
-    "warrant_from_baggage", "BAGGAGE_KEY",
+    "warrant_from_baggage", "chain_from_baggage", "BAGGAGE_KEY",
 ]
 
 #: Baggage entry that carries the exported warrant to downstream services.
@@ -94,6 +96,14 @@ def warrant_attributes(w: Warrant) -> dict[str, Any]:
         attrs["segurai.key_id"] = w.key_id
     if w.signature:
         attrs["warrant.signature"] = base64.b64encode(w.signature).decode("ascii")
+    if w.holder_key:
+        attrs["warrant.holder_key"] = base64.b64encode(w.holder_key).decode("ascii")
+    try:
+        # The whole chain, so the collector can verify this hop on its own.
+        # Never the private key: spans go to tracing backends.
+        attrs["warrant.chain"] = export_chain(w, include_key=False)
+    except Exception:   # a warrant built by hand, outside the runtime's store
+        pass
     return attrs
 
 
@@ -127,11 +137,11 @@ class OtelListener(Listener):
     ``capture_request`` - include the human's request text on the session span.
     Turn it off if requests may contain data your tracing backend must not hold.
 
-    ``propagate_baggage`` - also put the exported warrant into OpenTelemetry
-    baggage, so instrumented HTTP clients forward it to downstream services
-    automatically. Off by default: baggage is sent on EVERY outgoing request,
-    including to third-party APIs, and the warrant names the principal and
-    the scope.
+    ``propagate_baggage`` - also put the chain (without any private key) into
+    OpenTelemetry baggage, so instrumented HTTP clients forward it to
+    downstream services automatically. Off by default: baggage is sent on
+    EVERY outgoing request, including to third-party APIs, and the chain
+    names the principal and the scope.
     """
 
     def __init__(self, tracer_provider: Any = None, *, capture_request: bool = True,
@@ -208,7 +218,7 @@ class OtelListener(Listener):
         if not self.propagate_baggage:
             yield
             return
-        token = otel_context.attach(baggage.set_baggage(BAGGAGE_KEY, export_warrant(warrant)))
+        token = otel_context.attach(baggage.set_baggage(BAGGAGE_KEY, export_chain(warrant, include_key=False)))
         try:
             yield
         finally:
@@ -228,14 +238,20 @@ def _flag_violation(span: Any, record: ActionRecord) -> None:
         span.add_event("warrant.unverifiable", {"warrant.unverifiable.reasons": unverifiable})
 
 
-def warrant_from_baggage(ctx: Any = None) -> Warrant | None:
-    """On a receiving service: the warrant a caller put in baggage, if any.
-
-    The result is NOT verified yet - check it with your Authority before
-    delegating from it (``segurai.delegate(..., parent=w)`` does that).
-    """
+def chain_from_baggage(ctx: Any = None) -> list[Warrant] | None:
+    """On a receiving service: the chain a caller put in baggage, if any. NOT verified yet."""
     token = baggage.get_baggage(BAGGAGE_KEY, ctx)
-    return import_warrant(str(token)) if token else None
+    return import_chain(str(token))[0] if token else None
+
+
+def warrant_from_baggage(ctx: Any = None) -> Warrant | None:
+    """On a receiving service: the (leaf) warrant a caller put in baggage, if any.
+
+    The result is NOT verified yet - verify the whole chain with
+    ``segurai.verify_chain(chain_from_baggage(), authority)`` before trusting it.
+    """
+    chain = chain_from_baggage(ctx)
+    return chain[-1] if chain else None
 
 
 _listener: OtelListener | None = None

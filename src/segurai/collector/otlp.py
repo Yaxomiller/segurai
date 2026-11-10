@@ -51,7 +51,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Mapping
 
-from ..authority import Authority, ChainError
+from ..authority import Authority, ChainError, verify_chain
+from ..context import import_chain
 from ..models import ActionRecord, Finding, Scope, Warrant, utcnow
 from .store import Store
 
@@ -207,6 +208,7 @@ def _spans(request: Mapping[str, Any]) -> Iterator[_Span]:
 
 def _warrant(a: Mapping[str, Any]) -> Warrant:
     signature = a.get("warrant.signature")
+    holder_key = a.get("warrant.holder_key")
     return Warrant(
         warrant_id=a["warrant.id"],
         session_id=a["warrant.session_id"],
@@ -219,6 +221,7 @@ def _warrant(a: Mapping[str, Any]) -> Warrant:
         depth=int(a["warrant.depth"]),
         key_id=a.get("segurai.key_id") or None,
         signature=base64.b64decode(signature) if signature else None,
+        holder_key=base64.b64decode(holder_key) if holder_key else None,
     )
 
 
@@ -247,7 +250,18 @@ def _ingest_warrant_span(store: Store, attrs: Mapping[str, Any], verifier: Autho
     try:
         if all(k in attrs for k in _SEGURAI_KEYS):
             w = _warrant(attrs)
-            if verifier is not None:
+            if attrs.get("warrant.chain"):
+                # The span carries the chain from the root down: verify every
+                # hop (signature, link, narrowing) without needing anything
+                # stored earlier - spans arrive in any order.
+                chain, _ = import_chain(str(attrs["warrant.chain"]))
+                if chain[-1] != w:
+                    raise ChainError("the span's warrant does not match the chain it carries")
+                if verifier is not None:
+                    verify_chain(chain, verifier, allow_expired=True)
+                for hop in chain[:-1]:
+                    store.put_warrant(hop)
+            elif verifier is not None:
                 verifier.verify(w)      # raises ChainError if forged or altered
             store.put_warrant(w)
             report.warrants += 1

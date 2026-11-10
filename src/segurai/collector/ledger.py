@@ -86,6 +86,17 @@ def entry_hash(seq: int, prev_hash: str, kind: str, ref_id: str, body_hash: str,
     return hashlib.sha256(material).hexdigest()
 
 
+#: Columns added to a logged table AFTER the log existed. Rows written before a
+#: column existed were hashed without it, so the rule is: a later column is part
+#: of a row's hash only when it holds a value. An old row (NULL there) hashes
+#: exactly as it did when it was written; a new row with a value is covered.
+LATER_COLUMNS = frozenset({"holder_key", "identity_json"})
+
+#: Columns the database adds for its own bookkeeping (PostgreSQL's insertion
+#: order). They are not part of the record, so they are never hashed.
+HIDDEN_COLUMNS = frozenset({"ord"})
+
+
 def row_payload(mapping: Mapping[str, Any]) -> dict[str, Any]:
     """A database row as plain JSON-ready values.
 
@@ -97,6 +108,8 @@ def row_payload(mapping: Mapping[str, Any]) -> dict[str, Any]:
     """
     payload: dict[str, Any] = {}
     for key, value in mapping.items():
+        if key in HIDDEN_COLUMNS or (key in LATER_COLUMNS and value is None):
+            continue
         if isinstance(value, (bytes, bytearray, memoryview)):
             payload[key] = base64.b64encode(bytes(value)).decode("ascii")
         else:

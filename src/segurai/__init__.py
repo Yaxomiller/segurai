@@ -45,7 +45,9 @@ from .context import (
     NoWarrantError,
     bind_warrant,
     current_warrant,
+    export_chain,
     export_warrant,
+    import_chain,
     import_warrant,
 )
 from .models import ActionRecord, Check, Finding, Scope, Warrant
@@ -61,6 +63,7 @@ from .runtime import (
     configure,
     delegate,
     remove_listener,
+    resume,
     session,
     tool,
     tool_span,
@@ -81,6 +84,7 @@ __all__ = [
     "Authority", "ChainError", "verify_chain",
     # context
     "current_warrant", "bind_warrant", "export_warrant", "import_warrant",
+    "export_chain", "import_chain", "resume",
     "NoWarrantError",
     # storage and reporting
     "Store", "render", "summary", "verify_session", "audit", "checkpoint",

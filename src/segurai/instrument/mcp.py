@@ -33,10 +33,12 @@ SERVER SIDE - continue the chain inside a tool:
             segurai.act("delete", f"crm.{table}", scale=len(ids), irreversible=True)
             ...
 
-  The server checks the incoming warrant's signature, derives a child warrant
-  for itself, and everything it records joins the same chain. That requires
-  the server to hold the same signing key (the same organisation);
-  cross-organisation trust is a later milestone.
+  The client sends its whole chain plus its delegation key (a chain token -
+  see context.py). The server verifies every hop against the organisation's
+  PUBLIC key, derives a child warrant for itself with the key it was handed,
+  and everything it records joins the same chain. The server never needs the
+  organisation's private key. Trust across organisations (two different
+  organisation keys) is a later milestone.
 
 Tested against the official ``mcp`` Python SDK 2.x, but nothing here imports
 it: any client object with ``call_tool`` and ``list_tools`` works.
@@ -50,7 +52,7 @@ from typing import Any, Iterator, Mapping
 
 from ..actions import ActionSpec
 from ..authority import ChainError
-from ..context import NoWarrantError, export_warrant, import_warrant
+from ..context import CHAIN_TOKEN_PREFIX, NoWarrantError, export_chain, import_chain
 from ..models import Scope, Warrant
 from ..runtime import _rt, check_tool_call, delegate, tool_span
 
@@ -100,11 +102,14 @@ class WarrantedClient:
     """
 
     def __init__(self, client: Any, server: str, rules: Mapping[str, ActionSpec] | None = None,
-                 *, send_warrant: bool = True):
+                 *, send_warrant: bool = True, send_key: bool = True):
         self._client = client
         self.server = server
         self.rules = dict(rules or {})
         self.send_warrant = send_warrant
+        # Without the key the server can verify the chain but not continue
+        # it in another process (it would need to hold the org key itself).
+        self.send_key = send_key
         self._annotations: dict[str, Any] | None = None  # filled on first use
 
     def __getattr__(self, name: str) -> Any:
@@ -135,7 +140,7 @@ class WarrantedClient:
             # never sent.
             check_tool_call(name, spec, arguments or {}, mcp_server=self.server)
             if self.send_warrant:
-                meta = {**(meta or {}), META_KEY: export_warrant()}
+                meta = {**(meta or {}), META_KEY: export_chain(include_key=self.send_key)}
             return await self._client.call_tool(name, arguments, *args, meta=meta, **kwargs)
 
 
@@ -155,11 +160,16 @@ def _meta_of(source: Any) -> Mapping[str, Any] | None:
     return getattr(source, "meta", None)
 
 
-def warrant_from_meta(source: Any) -> Warrant | None:
-    """The warrant a client sent with this request, if any. NOT verified yet."""
+def _token_of(source: Any) -> str | None:
     meta = _meta_of(source)
     token = meta.get(META_KEY) if meta else None
-    return import_warrant(token) if token else None
+    return str(token) if token else None
+
+
+def warrant_from_meta(source: Any) -> Warrant | None:
+    """The (leaf) warrant a client sent with this request, if any. NOT verified yet."""
+    token = _token_of(source)
+    return import_chain(token)[0][-1] if token else None
 
 
 @contextmanager
@@ -173,10 +183,12 @@ def bind_from_meta(source: Any, holder: str, scope: Scope | None = None,
     With ``required=False`` a request that carried no warrant runs with no
     warrant bound (and yields None) instead of raising.
     """
+    token = _token_of(source)
     try:
-        parent = warrant_from_meta(source)
+        chain, key = import_chain(token) if token else ([], None)
     except ValueError as exc:
         raise WarrantRefused(f"warrant refused: {exc}") from exc
+    parent = chain[-1] if chain else None
     if parent is None:
         if required:
             raise WarrantMissing(
@@ -189,13 +201,18 @@ def bind_from_meta(source: Any, holder: str, scope: Scope | None = None,
     store, authority = _rt.ensure()
     with ExitStack() as stack:
         try:
-            # Never trust a warrant just because it arrived: check it was
-            # signed by our key and not altered on the way.
-            authority.verify(parent)
-            # Keep the caller's warrant in this server's store too, so the
-            # chain can be walked from here. Ancestors further up arrive
-            # through the collector.
-            store.put_warrant(parent)
+            # Never trust a warrant just because it arrived. A chain token is
+            # verified hop by hop against the organisation's public key; an
+            # old single-warrant token only verifies if we already trust the
+            # key that signed it.
+            if token.startswith(CHAIN_TOKEN_PREFIX):
+                parent = authority.adopt(chain, key)
+            else:
+                authority.verify(parent)
+            # Keep the caller's chain in this server's store too, so the chain
+            # can be walked from here.
+            for w in chain:
+                store.put_warrant(w)
             child = stack.enter_context(delegate(holder, scope=scope, ttl=ttl, parent=parent))
         except ChainError as exc:
             raise WarrantRefused(f"warrant refused: {exc}") from exc

@@ -26,6 +26,7 @@ Where this file is used:
 
 from __future__ import annotations
 
+import base64
 import json
 import operator as _operator
 from dataclasses import dataclass, field, replace
@@ -740,6 +741,11 @@ class Warrant:
     depth: int = 0               # 0 for the root, parent's depth + 1 below it
     key_id: str | None = None    # which signing key signed it (see authority.py)
     signature: bytes | None = field(default=None, repr=False)
+    #: The holder's own public key (32 raw Ed25519 bytes), when it has one.
+    #: The holder signs with the matching private key: the warrants it hands
+    #: on, and the actions it takes. That is what lets an agent delegate
+    #: without ever holding the organisation's key (see authority.py).
+    holder_key: bytes | None = field(default=None, repr=False)
 
     def payload(self) -> dict[str, Any]:
         """The signed portion - everything except the signature itself.
@@ -747,8 +753,12 @@ class Warrant:
         ``parent_id`` and ``depth`` are included on purpose: signing them means
         a warrant cannot later be re-attached to a different parent or moved
         to a different position in the chain without the signature breaking.
+
+        ``holder_key`` appears only when set, so a warrant without one
+        serializes exactly as it did before holder keys existed - and
+        warrants signed back then still verify.
         """
-        return {
+        d: dict[str, Any] = {
             "warrant_id": self.warrant_id,
             "session_id": self.session_id,
             "root_principal": self.root_principal,
@@ -760,9 +770,37 @@ class Warrant:
             "depth": self.depth,
             "key_id": self.key_id,
         }
+        if self.holder_key is not None:
+            d["holder_key"] = base64.b64encode(self.holder_key).decode("ascii")
+        return d
 
     def signing_bytes(self) -> bytes:
         return _canonical(self.payload())
+
+    def to_dict(self) -> dict[str, Any]:
+        """The whole warrant as plain JSON: the signed payload plus its signature."""
+        d = self.payload()
+        d["signature"] = base64.b64encode(self.signature or b"").decode("ascii")
+        return d
+
+    @staticmethod
+    def from_dict(d: Mapping[str, Any]) -> "Warrant":
+        """Inverse of :meth:`to_dict`. Decodes only; verifying is the caller's job."""
+        holder_key = d.get("holder_key")
+        return Warrant(
+            warrant_id=str(d["warrant_id"]),
+            session_id=str(d["session_id"]),
+            root_principal=str(d["root_principal"]),
+            holder=str(d["holder"]),
+            scope=Scope.from_dict(d["scope"]),
+            issued_at=datetime.fromisoformat(d["issued_at"]),
+            expires_at=datetime.fromisoformat(d["expires_at"]),
+            parent_id=d.get("parent_id") or None,
+            depth=int(d.get("depth", 0)),
+            key_id=d.get("key_id") or None,
+            signature=base64.b64decode(d.get("signature") or "") or None,
+            holder_key=base64.b64decode(holder_key) if holder_key else None,
+        )
 
     def with_signature(self, signature: bytes) -> "Warrant":
         return replace(self, signature=signature)
