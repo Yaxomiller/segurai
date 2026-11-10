@@ -1,15 +1,21 @@
-# The Segurai collector and web view, packaged for a single-tenant pilot.
+# Segurai: the dashboard, span ingest, issuer, gateway, alerts and checkpoints,
+# run together by `segurai serve` from one configuration file.
 #
-#   docker build -t segurai-collector .
-#   docker run -e SEGURAI_COLLECTOR_TOKEN=... -v segurai-data:/data -p 127.0.0.1:4318:4318 segurai-collector
+# Use deploy/compose.yaml rather than running this by hand: it publishes the
+# ports on 127.0.0.1 only, keeps the data on a volume and makes the root
+# filesystem read-only. deploy/README.md has the three commands to start it.
 #
-# Most deployments should use deploy/compose.yaml instead, which wires in the
-# token, the organisation's public key and a persistent volume. See
-# docs/PILOT_RUNBOOK.md for the whole setup.
+#   docker build -t segurai .
 
 FROM python:3.12-slim
 
-# Don't write .pyc files into the image, and send logs straight to the console.
+LABEL org.opencontainers.image.title="Segurai" \
+      org.opencontainers.image.description="Proof of who authorised each AI agent action, and whether it stayed within bounds" \
+      org.opencontainers.image.source="https://github.com/Yaxomiller/segurai" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Don't write .pyc files (the root filesystem is read-only at run time), and
+# send logs straight to the console.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -17,11 +23,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Only what the package needs to install - no tests, evals or local databases
-# (see .dockerignore).
+# Only what the package needs to install: no tests, evals or local databases
+# (see .dockerignore). "server" is the dashboard, ingest and company sign-in;
+# "postgres" lets the same image use a PostgreSQL database.
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install ".[collector]"
+RUN pip install ".[server,postgres]" \
+    && segurai --help > /dev/null
 
 # Run as an ordinary user that owns only the data directory, never as root.
 RUN useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin segurai \
@@ -29,22 +37,17 @@ RUN useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin segu
     && chown segurai:segurai /data
 USER segurai
 
-# Everything the collector stores lives in /data, so mount a volume there.
+# Everything Segurai keeps lives in /data: segurai.toml, the organisation's
+# key, the SQLite database (unless PostgreSQL is used) and the witness file.
 VOLUME ["/data"]
+WORKDIR /data
 
-# Configuration comes from the environment (the CLI reads these):
-#   SEGURAI_DB               database file
-#   SEGURAI_KEY              the organisation's PUBLIC key (.pub), to check signatures
-#   SEGURAI_COLLECTOR_TOKEN  required: the collector refuses to listen beyond
-#                            this machine without one
-#   SEGURAI_HOST / SEGURAI_PORT
-ENV SEGURAI_DB=/data/segurai.db \
-    SEGURAI_HOST=0.0.0.0 \
-    SEGURAI_PORT=4318
+# 8700: dashboard, span ingest (/v1/traces), issuer (/v1/sessions).
+# 8800: the gateway, when segurai.toml configures one.
+EXPOSE 8700 8800
 
-EXPOSE 4318
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8700/healthz', timeout=3)"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4318/healthz', timeout=3)"]
-
-CMD ["segurai", "collect"]
+ENTRYPOINT ["segurai"]
+CMD ["serve", "--config", "/data/segurai.toml"]

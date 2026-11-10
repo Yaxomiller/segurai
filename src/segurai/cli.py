@@ -30,6 +30,7 @@ looked for beside it (segurai.db -> segurai.key / segurai.pub) unless
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import sys
@@ -310,6 +311,10 @@ def cmd_keygen(args: argparse.Namespace) -> int:
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
+def _port_in_use(exc: OSError) -> bool:
+    return exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048
+
+
 def _serve(args: argparse.Namespace, what: str) -> int:
     """Start the collector's HTTP server (spans in, web pages out), with the safety checks."""
     from .collector.server import CollectorServer
@@ -326,7 +331,14 @@ def _serve(args: argparse.Namespace, what: str) -> int:
     store = _store(args)
     key_path = _find_key(args)
     verifier = Authority.verifier(key_path) if key_path is not None and key_path.exists() else None
-    server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
+    try:
+        server = CollectorServer((args.host, args.port), store, verifier=verifier, token=token)
+    except OSError as exc:
+        if not _port_in_use(exc):
+            raise
+        print(f"Cannot start: port {args.port} is already in use by another program "
+              f"(perhaps another segurai). Stop it, or pass --port.")
+        return 1
     host, port = server.server_address[:2]
     print(f"segurai {what}: http://{host}:{port}/  (spans to /v1/traces, database {_shown(args.db)})")
     if verifier is not None:
@@ -415,7 +427,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     """Write a commented segurai.toml and create the organisation's signing key."""
-    from .config import EXAMPLE
+    from .config import example
 
     folder = Path(args.dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -423,7 +435,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if path.exists() and not args.force:
         print(f"{path} already exists; pass --force to overwrite it.")
         return 1
-    path.write_text(EXAMPLE, encoding="utf-8")
+    path.write_text(example(docker=args.for_docker, postgres=args.postgres), encoding="utf-8")
     authority = Authority.load_or_create(folder / "segurai.key")
     print(f"Wrote {path} and the organisation's key {folder / 'segurai.key'} ({authority.key_id}).")
     print("Keep the .key file secret; share the .pub file with auditors. Next:")
@@ -450,8 +462,9 @@ def cmd_config(args: argparse.Namespace) -> int:
     if config is None:
         return 2
     try:
-        deployment = build(config)
-    except Exception as exc:          # a port in use, an unreadable key...
+        # Spare ports: checking must work while the configured server is running.
+        deployment = build(config, any_port=True)
+    except Exception as exc:          # an unreadable key, an unreachable database...
         print(f"The configuration reads correctly, but cannot start: {exc}")
         return 2
     try:
@@ -476,12 +489,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from .serve import build
 
+    if not Path(args.config).exists():
+        print(f"No configuration at {args.config}. Create one first:")
+        print(f"  segurai init --dir {Path(args.config).parent}")
+        print("(In Docker: docker compose -f deploy/compose.yaml run --rm segurai init --dir /data --for-docker)")
+        return 2
     config = _load_config(args.config)
     if config is None:
         return 2
     try:
         deployment = build(config)
     except OSError as exc:
+        if _port_in_use(exc):
+            ports = [str(config.server.port)] + ([str(config.gateway_address[1])] if config.gateway else [])
+            print(f"Cannot start: port {' or '.join(ports)} is already in use by another program. "
+                  f"Stop it, or choose another port in {args.config}.")
+            return 1
         print(f"Cannot start: {exc}")
         return 1
     deployment.start()
@@ -849,6 +872,10 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("init", help="write a commented segurai.toml and a signing key")
     s.add_argument("--dir", default=".", help="where to write them (default: here)")
     s.add_argument("--force", action="store_true", help="overwrite an existing segurai.toml")
+    s.add_argument("--for-docker", action="store_true",
+                   help="listen inside a container (needs SEGURAI_INGEST_TOKEN); see deploy/compose.yaml")
+    s.add_argument("--postgres", action="store_true",
+                   help="use the PostgreSQL database in SEGURAI_DATABASE_URL instead of a SQLite file")
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("config", help="check a configuration file")

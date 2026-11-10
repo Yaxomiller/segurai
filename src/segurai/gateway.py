@@ -52,7 +52,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any, Mapping
 
 from cryptography.exceptions import InvalidSignature
@@ -61,6 +61,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from ._net import ExclusiveHTTPServer
 from .authority import Authority, ChainError, verify_chain
 from .collector.store import Store
 from .context import CHAIN_TOKEN_PREFIX, export_chain, import_chain
@@ -330,7 +331,7 @@ class _Refusal(Exception):
         self.status, self.message, self.action_id, self.findings = status, message, action_id, findings or []
 
 
-class GatewayServer(ThreadingHTTPServer):
+class GatewayServer(ExclusiveHTTPServer):
     """The gateway's HTTP server. ``address`` is (host, port); port 0 picks a free one."""
 
     daemon_threads = True

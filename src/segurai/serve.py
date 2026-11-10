@@ -79,8 +79,12 @@ class Deployment:
         self.store.close()
 
 
-def build(config: Config) -> Deployment:
-    """Assemble a deployment from a checked configuration. Starts nothing."""
+def build(config: Config, *, any_port: bool = False) -> Deployment:
+    """Assemble a deployment from a checked configuration. Starts nothing.
+
+    ``any_port`` binds spare ports instead of the configured ones, so a
+    configuration can be checked while the server it describes is running.
+    """
     from .alerts import AlertWorker
     from .collector.auth import WebAuth
     from .collector.server import CollectorServer
@@ -108,7 +112,7 @@ def build(config: Config) -> Deployment:
                         default_ttl=config.issuer.default_ttl, max_ttl=config.issuer.max_ttl)
 
     witness_files = [str(w.path) for w in config.witnesses if isinstance(w, FileWitness)]
-    server = CollectorServer((s.host, s.port), store, verifier=verifier, auth=auth, issuer=issuer,
+    server = CollectorServer((s.host, 0 if any_port else s.port), store, verifier=verifier, auth=auth, issuer=issuer,
                              ingest_tokens=s.ingest_tokens, signer=authority, witness_files=witness_files,
                              trust_proxy=s.trust_proxy)
 
@@ -116,7 +120,8 @@ def build(config: Config) -> Deployment:
     if config.gateway is not None:
         from .gateway import GatewayServer
 
-        gateway = GatewayServer(config.gateway_address, config.gateway, store, verifier, policy=config.policy)
+        address = (config.gateway_address[0], 0) if any_port else config.gateway_address
+        gateway = GatewayServer(address, config.gateway, store, verifier, policy=config.policy)
 
     alerts = None
     if config.alert_channels:

@@ -1,0 +1,2 @@
+# Shell scripts run on Linux and in containers: keep Unix line endings on every checkout.
+*.sh text eol=lf

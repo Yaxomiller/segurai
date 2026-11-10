@@ -44,10 +44,11 @@ import logging
 import secrets
 import zlib
 from http.cookies import CookieError, SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any, Iterable
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
+from .._net import ExclusiveHTTPServer
 from ..authority import Authority
 from . import web
 from .auth import COOKIE, PRE_LOGIN_COOKIE, AuthError, WebAuth, safe_next
@@ -69,7 +70,7 @@ CSRF_COOKIE = "segurai_csrf"
 _ROLES = (("/access", "auditor"), ("/audit", "auditor"), ("/admin/", "admin"))
 
 
-class CollectorServer(ThreadingHTTPServer):
+class CollectorServer(ExclusiveHTTPServer):
     """The HTTP server. ``address`` is ``(host, port)``; port 0 picks a free port (tests).
 
     ``verifier`` holds the organisation's public key (warrants are stored

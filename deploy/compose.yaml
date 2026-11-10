@@ -1,34 +1,43 @@
-# Single-tenant pilot: one collector with its web view, one database.
+# Segurai for a single-tenant pilot: one container, one volume.
 #
-#   export SEGURAI_COLLECTOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-#   mkdir -p keys && cp /path/to/org.pub keys/org.pub
-#   docker compose -f deploy/compose.yaml up -d --build
+# First run (deploy/README.md explains each step):
 #
-# It listens on 127.0.0.1 only. Put your usual TLS reverse proxy in front of
-# it (docs/PILOT_RUNBOOK.md has a two-line Caddy example) - never expose the
-# port directly to the internet.
+#   export SEGURAI_INGEST_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+#   docker compose -f deploy/compose.yaml run --rm segurai init --dir /data --for-docker
+#   docker compose -f deploy/compose.yaml run --rm segurai users add --config /data/segurai.toml \
+#       --email you@acme.example --role admin
+#   docker compose -f deploy/compose.yaml up -d
+#
+# Then open http://127.0.0.1:8700/ and sign in.
+#
+# The ports are published on 127.0.0.1 only. Put your usual TLS reverse proxy
+# in front for anything wider (docs/PILOT_RUNBOOK.md has a Caddy example);
+# never expose them directly to the internet.
+#
+# For PostgreSQL instead of a SQLite file, add deploy/compose.postgres.yaml.
 
 services:
   segurai:
     build:
       context: ..
-    image: segurai-collector:0.1.0
+    image: segurai:local
     restart: unless-stopped
     environment:
-      # Compose stops with this message if the token isn't set.
-      SEGURAI_COLLECTOR_TOKEN: ${SEGURAI_COLLECTOR_TOKEN:?set SEGURAI_COLLECTOR_TOKEN to a long random value}
-      # The organisation's PUBLIC key. The private key stays with the agents.
-      SEGURAI_KEY: /keys/org.pub
+      # The token agents send spans with. Compose stops with this message if
+      # it isn't set.
+      SEGURAI_INGEST_TOKEN: ${SEGURAI_INGEST_TOKEN:?set SEGURAI_INGEST_TOKEN to a long random value}
     volumes:
       - segurai-data:/data
-      - ./keys:/keys:ro
     ports:
-      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:8700:8700"         # dashboard, span ingest, issuer
+      - "127.0.0.1:8800:8800"         # the gateway, if segurai.toml configures one
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   segurai-data:

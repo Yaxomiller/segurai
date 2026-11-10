@@ -264,3 +264,47 @@ def test_the_first_admin_is_added_from_the_command_line(tmp_path, capsys, monkey
     assert "ops@acme.example" in listing and "admin" in listing
     assert cli_main(["config", "check", "--config", config]) == 0
     assert "is valid" in capsys.readouterr().out
+
+
+def test_init_writes_configurations_for_docker_and_postgres(tmp_path, capsys, monkeypatch):
+    """What the container's first-run steps produce must load as they are."""
+    from segurai.cli import main as cli_main
+
+    docker = tmp_path / "docker"
+    assert cli_main(["init", "--dir", str(docker), "--for-docker"]) == 0
+    with pytest.raises(ConfigError, match="SEGURAI_INGEST_TOKEN"):
+        load_config(docker / "segurai.toml")                   # listening widely needs a token...
+    monkeypatch.setenv("SEGURAI_INGEST_TOKEN", "a-token-of-thirty-two-characters")
+    config = load_config(docker / "segurai.toml")               # ...and then it's fine
+    assert config.server.host == "0.0.0.0" and config.server.database == str(docker.resolve() / "segurai.db")
+
+    both = tmp_path / "both"
+    assert cli_main(["init", "--dir", str(both), "--for-docker", "--postgres"]) == 0
+    monkeypatch.setenv("SEGURAI_DATABASE_URL", "postgresql://segurai:secret@postgres:5432/segurai")
+    config = load_config(both / "segurai.toml")
+    assert config.server.database.startswith("postgresql://") and "secret" not in "\n".join(config.summary())
+
+
+def test_serve_without_a_configuration_says_how_to_make_one(tmp_path, capsys):
+    from segurai.cli import main as cli_main
+
+    assert cli_main(["serve", "--config", str(tmp_path / "missing.toml")]) == 2
+    out = capsys.readouterr().out
+    assert "No configuration at" in out and "segurai init --dir" in out
+
+
+def test_a_busy_port_is_refused_not_shared():
+    """Regression: on Windows a second server could bind the same port and answer its requests."""
+    from segurai.collector.server import CollectorServer
+    from segurai.gateway import GatewayConfig, GatewayServer
+
+    first = CollectorServer(("127.0.0.1", 0), segurai._runtime.store)
+    port = first.server_address[1]
+    try:
+        with pytest.raises(OSError):
+            CollectorServer(("127.0.0.1", port), segurai._runtime.store)
+        with pytest.raises(OSError):
+            GatewayServer(("127.0.0.1", port), GatewayConfig(upstreams=()), segurai._runtime.store,
+                          segurai._runtime.authority)
+    finally:
+        first.server_close()

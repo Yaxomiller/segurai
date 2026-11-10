@@ -71,12 +71,17 @@ def test_backup_makes_a_consistent_copy_and_will_not_overwrite_by_accident(tmp_p
 def test_the_container_files_keep_their_safety_defaults():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "USER segurai" in dockerfile
-    assert 'CMD ["segurai", "collect"]' in dockerfile
+    assert 'CMD ["serve", "--config", "/data/segurai.toml"]' in dockerfile
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
-    assert "${SEGURAI_COLLECTOR_TOKEN:?" in compose        # won't start without a token
-    assert '"127.0.0.1:4318:4318"' in compose               # localhost only
-    assert "read_only: true" in compose
+    assert "${SEGURAI_INGEST_TOKEN:?" in compose            # won't start without a token
+    assert '"127.0.0.1:8700:8700"' in compose               # localhost only
+    assert '"127.0.0.1:8800:8800"' in compose
+    assert "read_only: true" in compose and "no-new-privileges:true" in compose and "- ALL" in compose
+
+    postgres = (ROOT / "deploy" / "compose.postgres.yaml").read_text(encoding="utf-8")
+    assert "${SEGURAI_DB_PASSWORD:?" in postgres            # no default database password
+    assert "ports:" not in postgres                         # the database is not published
 
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert "*.key" in dockerignore and "*.db" in dockerignore

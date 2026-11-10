@@ -83,6 +83,19 @@ jobs:
       - name: Tests
         run: python -m pytest -q tests/test_crewai.py
 
+  docker:
+    # Builds the image and runs a deployment end to end, exactly as an
+    # operator would: first-run setup, an admin, healthy start, recorded
+    # actions, sign-in, the dashboard, and a clean audit.
+    name: Docker image (SQLite and PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deployment with a SQLite file
+        run: bash deploy/smoke-test.sh
+      - name: Deployment with PostgreSQL
+        run: bash deploy/smoke-test.sh postgres
+
   package:
     name: package builds cleanly
     runs-on: ubuntu-latest

@@ -35,7 +35,7 @@ from .collector.db import is_database_url, redact_url
 from .models import Scope
 from .policy import Policy, PolicyError
 
-__all__ = ["Config", "ConfigError", "load_config", "EXAMPLE"]
+__all__ = ["Config", "ConfigError", "load_config", "EXAMPLE", "example"]
 
 
 class ConfigError(ValueError):
@@ -519,3 +519,34 @@ every_minutes = 60
 type = "file"
 path = "witness/checkpoints.log"        # better: storage this server can append to but not rewrite
 '''
+
+
+def example(*, docker: bool = False, postgres: bool = False) -> str:
+    """The commented starting configuration, adjusted for where it will run.
+
+    ``docker``: listen on every interface inside the container (compose
+    publishes the ports on 127.0.0.1 only), which needs an ingest token, read
+    from SEGURAI_INGEST_TOKEN. ``postgres``: take the database URL from
+    SEGURAI_DATABASE_URL instead of using a SQLite file.
+    """
+    text = EXAMPLE
+    replacements = []
+    if docker:
+        replacements += [
+            ('host = "127.0.0.1"                      # put a TLS reverse proxy in front for anything wider',
+             'host = "0.0.0.0"                        # inside the container; compose publishes it on 127.0.0.1'),
+            ('ingest_tokens_env = []                  # e.g. ["SEGURAI_INGEST_TOKEN"]: tokens agents send spans with',
+             'ingest_tokens_env = ["SEGURAI_INGEST_TOKEN"]   # the token agents send spans with'),
+            ('# host = "127.0.0.1"\n# port = 8800', '# host = "0.0.0.0"\n# port = 8800'),
+        ]
+    if postgres:
+        replacements += [
+            ('database = "segurai.db"                 # a SQLite file, or postgresql://user@host/db\n'
+             '# database_env = "SEGURAI_DATABASE_URL" # or: the variable holding a PostgreSQL URL with its password',
+             'database_env = "SEGURAI_DATABASE_URL"   # the variable holding the PostgreSQL URL, password included'),
+        ]
+    for old, new in replacements:
+        if text.count(old) != 1:                       # pragma: no cover - caught by the tests
+            raise AssertionError(f"example(): {old!r} not found once")
+        text = text.replace(old, new)
+    return text

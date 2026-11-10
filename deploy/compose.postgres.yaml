@@ -1,0 +1,43 @@
+# Adds a PostgreSQL database to deploy/compose.yaml. Use both files together:
+#
+#   export SEGURAI_INGEST_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+#   export SEGURAI_DB_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+#   docker compose -f deploy/compose.yaml -f deploy/compose.postgres.yaml run --rm segurai \
+#       init --dir /data --for-docker --postgres
+#   docker compose -f deploy/compose.yaml -f deploy/compose.postgres.yaml run --rm segurai \
+#       users add --config /data/segurai.toml --email you@acme.example --role admin
+#   docker compose -f deploy/compose.yaml -f deploy/compose.postgres.yaml up -d
+#
+# `init --postgres` writes `database_env = "SEGURAI_DATABASE_URL"`, so the
+# password lives only in the environment. The organisation's key and the
+# witness file stay on the segurai-data volume.
+#
+# To use a managed database instead (RDS, Cloud SQL, Azure), skip this file
+# and set SEGURAI_DATABASE_URL on the segurai service yourself.
+
+services:
+  segurai:
+    environment:
+      SEGURAI_DATABASE_URL: postgresql://segurai:${SEGURAI_DB_PASSWORD:?set SEGURAI_DB_PASSWORD}@postgres:5432/segurai
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: segurai
+      POSTGRES_PASSWORD: ${SEGURAI_DB_PASSWORD:?set SEGURAI_DB_PASSWORD}
+      POSTGRES_DB: segurai
+    volumes:
+      - segurai-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U segurai -d segurai"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    # No published port: only the segurai container can reach it.
+
+volumes:
+  segurai-postgres:
