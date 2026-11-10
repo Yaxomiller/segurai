@@ -64,6 +64,29 @@ Full write-up: [evals/results/2026-11-05/](../results/2026-11-05/README.md).
 
 ## Before quoting the numbers
 
-**These labels were drafted by Claude on 2026-09-16, not by human reviewers.** Before a score goes into an application or a pitch, have at least one person, ideally two, label the cases independently, without looking at `expected`. Then:
-1. Fix any label that turns out to be wrong.
+**These labels were drafted by Claude on 2026-09-16, not by human reviewers.** Before a score goes into an application or a pitch, have two people label the cases independently, without looking at `expected`. Two commands do this:
+
+```bash
+segurai label --as alice --out labels-alice.jsonl --ambiguous-only   # alice, on her own machine
+segurai label --as bob   --out labels-bob.jsonl   --ambiguous-only   # bob, separately
+segurai label-agreement labels-alice.jsonl labels-bob.jsonl --merged agreed.jsonl
+```
+
+- `segurai label` shows each case as the judge sees it: the request, what was granted, the action, what Tier 1 flagged and the earlier actions. The existing label is never shown. Answer `w` (within what was asked), `o` (outside it) or `n` (a person must decide), with an optional note. Each answer is saved straight away, so you can stop with `q` and pick up where you left off.
+- `segurai label-agreement` reports how often the two people agree, as a raw rate and as **Cohen's kappa**, which is agreement beyond chance. A kappa of 1 is perfect, 0 is no better than chance, and above about 0.6 is usually called substantial. It also reports how often each person agrees with the existing answer key, and lists every case the two of them disagree on. `--merged` writes the labels they agree on.
+
+Then:
+1. Fix any label in `cases.jsonl` that both people contradict.
 2. Drop, or mark as ambiguous, any case where the people disagree with each other.
+3. Quote the judge's score only on the cases where the people agree, and quote it next to their kappa. A judge can't be held to a higher standard than two careful people manage between themselves.
+
+## Asking twice
+
+`--votes 2` on `segurai judge` and `segurai eval-judge` asks the model twice for each action.
+
+- **If the answers agree,** that answer is the verdict, with the lower of the two confidences.
+- **If they differ,** the verdict is `needs_human` and the reasoning shows how they split.
+
+The second live run showed that the model's answer on hard cases changes from one run to the next. An answer that changes is a sign of doubt, and that is the moment a person should decide. Voting turns that doubt into a deferral rather than a coin toss.
+
+The cost is roughly double per flagged action, which is still about a cent with the instructions cached. Clean actions are never judged, so they cost nothing either way.

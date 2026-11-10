@@ -645,7 +645,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
               f"which costs money. Re-run with --yes to go ahead.")
         return 2
 
-    judge = Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort))
+    judge = Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort), votes=args.votes)
     failures = 0
     for record in pending:
         try:
@@ -657,6 +657,39 @@ def cmd_judge(args: argparse.Namespace) -> int:
         print(f"  {verdict.verdict:<15} ({verdict.confidence}) {record.actor}: "
               f"{record.operation} {record.resource} - {verdict.reasoning}")
     return 1 if failures else 0
+
+
+def cmd_label(args: argparse.Namespace) -> int:
+    """Label the judge's eval cases yourself, without seeing the existing labels."""
+    from .judge.eval import load_cases
+    from .judge.labelling import label_cases
+
+    cases = load_cases(args.cases)
+    if args.split != "all":
+        cases = [c for c in cases if c.split == args.split]
+    if args.ambiguous_only:
+        cases = [c for c in cases if c.ambiguous]
+    label_cases(cases, args.out, labeller=args.labeller)
+    return 0
+
+
+def cmd_label_agreement(args: argparse.Namespace) -> int:
+    """How far two people's labels agree, and which cases they disagree on."""
+    from .judge.eval import load_cases
+    from .judge.labelling import agreement, load_labels, merged
+
+    first, second = load_labels(args.first), load_labels(args.second)
+    expected = {c.id: c.expected for c in load_cases(args.cases)} if args.cases else None
+    result = agreement(first, second, expected, names=(Path(args.first).stem, Path(args.second).stem))
+    if not result.shared:
+        print("The two files have no cases in common.")
+        return 1
+    print(result.to_text())
+    if args.merged:
+        rows = merged(first, second)
+        Path(args.merged).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        print(f"\nWrote the {len(rows)} label(s) both agree on to {args.merged}.")
+    return 0
 
 
 def cmd_eval_judge(args: argparse.Namespace) -> int:
@@ -681,7 +714,8 @@ def cmd_eval_judge(args: argparse.Namespace) -> int:
         mark = "error" if result.error else ("agree" if result.agree else "differ")
         print(f"  [{i}/{n}] {mark:6} {result.case_id}")
 
-    report = run_eval(Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort)), cases, progress)
+    report = run_eval(Judge(ClaudeJudgeBackend(model=args.model, effort=args.effort), votes=args.votes),
+                      cases, progress)
     print()
     print(report.to_markdown())
     if args.out:
@@ -855,7 +889,24 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--yes", action="store_true", help="confirm the paid API calls")
     s.add_argument("--model", default="claude-opus-5")
     s.add_argument("--effort", default="low", choices=efforts)
+    s.add_argument("--votes", type=int, default=1, choices=range(1, 6), metavar="1-5",
+                   help="ask this many times; disagreement becomes needs_human")
     s.set_defaults(func=cmd_judge)
+
+    s = sub.add_parser("label", help="label the judge's eval cases yourself, blind to existing labels")
+    s.add_argument("--cases", default="evals/tier2/cases.jsonl")
+    s.add_argument("--as", dest="labeller", required=True, help="your name, recorded with each label")
+    s.add_argument("--out", required=True, help="your labels file (resumes if it exists)")
+    s.add_argument("--split", default="all", choices=["dev", "test", "all"])
+    s.add_argument("--ambiguous-only", action="store_true", help="only the cases marked ambiguous")
+    s.set_defaults(func=cmd_label)
+
+    s = sub.add_parser("label-agreement", help="how far two people's labels agree")
+    s.add_argument("first")
+    s.add_argument("second")
+    s.add_argument("--cases", default=None, help="also compare each person with this answer key")
+    s.add_argument("--merged", default=None, help="write the labels both agree on here")
+    s.set_defaults(func=cmd_label_agreement)
 
     s = sub.add_parser("eval-judge", help="grade the Tier 2 judge on labeled cases (calls Claude)")
     s.add_argument("--cases", default="evals/tier2/cases.jsonl")
@@ -866,6 +917,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=None, help="write full JSON results here")
     s.add_argument("--model", default="claude-opus-5")
     s.add_argument("--effort", default="low", choices=efforts)
+    s.add_argument("--votes", type=int, default=1, choices=range(1, 6), metavar="1-5",
+                   help="ask this many times; disagreement becomes needs_human")
     s.set_defaults(func=cmd_eval_judge)
 
     args = p.parse_args(argv)

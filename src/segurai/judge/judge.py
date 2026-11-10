@@ -294,13 +294,45 @@ class ClaudeJudgeBackend:
 # ---- the judge -------------------------------------------------------------------
 
 class Judge:
-    """Reviews flagged actions and stores its verdicts."""
+    """Reviews flagged actions and stores its verdicts.
 
-    def __init__(self, backend: JudgeBackend | None = None):
+    ``votes`` asks the model that many times. When the answers agree, that is
+    the verdict; when they don't, the verdict is ``needs_human`` and the
+    reasoning says how they split. The first live evals showed the model's
+    answer on genuinely hard cases moves from run to run - and an answer
+    that moves is itself a sign of doubt, which is exactly when a person
+    should decide. Two votes roughly double the cost of reviewing a flagged
+    action (about a cent with the instructions cached).
+    """
+
+    def __init__(self, backend: JudgeBackend | None = None, votes: int = 1):
+        if not 1 <= votes <= 5:
+            raise ValueError("votes must be between 1 and 5")
         self.backend = backend if backend is not None else ClaudeJudgeBackend()
+        self.votes = votes
 
     def judge(self, review: Mapping[str, Any], action_id: str, session_id: str) -> Verdict:
         """Judge one prepared review (see build_review). Does not store anything."""
+        if self.votes == 1:
+            return self._judge_once(review, action_id, session_id)
+        ballots = [self._judge_once(review, action_id, session_id) for _ in range(self.votes)]
+        latency = sum(b.latency_ms or 0 for b in ballots)
+        model = f"{ballots[0].model or 'model'} x{self.votes}"
+        answers = [b.verdict for b in ballots]
+        if len(set(answers)) == 1:
+            first = ballots[0]
+            confidence = "high" if all(b.confidence == "high" for b in ballots) else (
+                "low" if any(b.confidence == "low" for b in ballots) else "medium")
+            return Verdict(action_id=action_id, session_id=session_id, verdict=first.verdict,
+                           confidence=confidence, reasoning=first.reasoning, clause=first.clause,
+                           model=model, latency_ms=latency)
+        split = ", ".join(f"{a} ({answers.count(a)})" for a in sorted(set(answers)))
+        reasons = " | ".join(f"{b.verdict}: {b.reasoning}" for b in ballots)
+        return Verdict(action_id=action_id, session_id=session_id, verdict="needs_human", confidence="low",
+                       reasoning=f"Independent reviews disagreed ({split}), so a person should decide. {reasons}",
+                       clause=ballots[0].clause, model=model, latency_ms=latency)
+
+    def _judge_once(self, review: Mapping[str, Any], action_id: str, session_id: str) -> Verdict:
         started = time.perf_counter()
         try:
             raw = self.backend.complete(INSTRUCTIONS, render_review(review))
