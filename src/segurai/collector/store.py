@@ -177,15 +177,22 @@ _ADDED_COLUMNS = [
 ]
 
 class SessionRow:
-    __slots__ = ("session_id", "principal", "request", "contract", "started_at")
+    __slots__ = ("session_id", "principal", "request", "contract", "started_at", "identity")
 
     def __init__(self, session_id: str, principal: str, request: str,
-                 contract: dict | None, started_at: datetime):
+                 contract: dict | None, started_at: datetime, identity: dict | None = None):
         self.session_id = session_id
         self.principal = principal
         self.request = request
         self.contract = contract
         self.started_at = started_at
+        #: How the principal was proven (identity.Identity.to_dict()), or None
+        #: when the calling code only claimed it.
+        self.identity = identity
+
+    @property
+    def verified(self) -> bool:
+        return bool(self.identity)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Session {self.session_id} {self.principal!r} {self.request!r}>"
@@ -428,13 +435,17 @@ class Store:
     # ---- sessions ----------------------------------------------------
 
     def put_session(self, session_id: str, principal: str, request: str,
-                    contract: dict | None, started_at: datetime) -> None:
+                    contract: dict | None, started_at: datetime,
+                    identity: dict | None = None) -> None:
         self._write_row("sessions", {
             "session_id": session_id,
             "principal": principal,
             "request": request,
             "contract_json": json.dumps(contract) if contract is not None else None,
             "started_at": started_at.isoformat(),
+            # Only written when proven, so sessions hash as they always did
+            # otherwise (see ledger.LATER_COLUMNS).
+            **({"identity_json": json.dumps(identity, sort_keys=True)} if identity else {}),
         }, kind="session", ref_id=session_id)
 
     def get_session(self, session_id: str) -> SessionRow | None:
@@ -675,6 +686,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRow:
         request=row["request"],
         contract=json.loads(row["contract_json"]) if row["contract_json"] else None,
         started_at=datetime.fromisoformat(row["started_at"]),
+        identity=json.loads(row["identity_json"]) if row["identity_json"] else None,
     )
 
 

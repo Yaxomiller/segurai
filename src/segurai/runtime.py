@@ -279,15 +279,22 @@ class Session:
 
 @contextmanager
 def session(
-    principal: str,
-    request: str,
+    principal: str | None = None,
+    request: str | None = None,
     scope: Scope | None = None,
     contract: dict | None = None,
     ttl: timedelta = DEFAULT_TTL,
     session_id: str | None = None,
     ceiling: Scope | None = None,
+    identity: Any = None,
 ) -> Iterator[Session]:
     """Open a session from a human request.
+
+    Who asked: pass ``identity`` - an :class:`segurai.identity.Identity` that
+    a trusted login system vouched for - and the session records that the
+    person was PROVEN. Passing only ``principal`` records who the calling
+    code CLAIMS asked, and every view labels it as claimed. Passing both
+    requires them to agree.
 
     Where the root scope comes from:
 
@@ -302,6 +309,15 @@ def session(
     real permissions.
     """
     store, authority = _rt.ensure()
+    if not request:
+        raise ValueError("session() needs the request: what the person asked for, in their words")
+    if identity is not None:
+        if principal is not None and principal.lower() != identity.principal.lower():
+            raise ValueError(f"principal {principal!r} does not match the verified identity "
+                             f"{identity.principal!r}")
+        principal = identity.principal
+    if not principal:
+        raise ValueError("session() needs who asked: an identity, or at least a principal")
 
     if scope is None:
         if _rt.intent is None:
@@ -321,7 +337,8 @@ def session(
 
     root = authority.issue_root(session_id=sid, principal=principal, scope=scope,
                                 ttl=ttl, now=started)
-    store.put_session(sid, principal, request, contract, started)
+    store.put_session(sid, principal, request, contract, started,
+                      identity=identity.to_dict() if identity is not None else None)
     store.put_warrant(root)
 
     handle = Session(sid, principal, request, root)

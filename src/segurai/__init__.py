@@ -50,6 +50,7 @@ from .context import (
     import_chain,
     import_warrant,
 )
+from .identity import Identity, IdentityError, IdentityVerifier, TrustedIssuer
 from .models import ActionRecord, Check, Finding, Scope, Warrant
 from .policy import Policy, PolicyError, Rule
 from .runtime import (
@@ -81,6 +82,7 @@ __all__ = [
     "ActionSpec", "ActionSpecError", "count", "arg",
     # model
     "Scope", "Check", "Finding", "Warrant", "ActionRecord", "Policy", "Rule", "PolicyError",
+    "Identity", "IdentityError", "IdentityVerifier", "TrustedIssuer",
     # authority
     "Authority", "ChainError", "verify_chain",
     # context

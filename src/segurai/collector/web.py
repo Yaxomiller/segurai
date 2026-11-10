@@ -299,6 +299,19 @@ def _what_it_did(a: ActionRecord) -> str:
             f"<code>{_e(a.resource)}</code> &mdash; <span class='fail'>it went ahead</span>")
 
 
+def _identity_chip(sess: Any) -> str:
+    """Whether the person at the top of a request was proven, or only named."""
+    identity = getattr(sess, "identity", None)
+    if identity:
+        issuer = str(identity.get("issuer") or "the login system")
+        return (f"<span class='chip ok' title='Signed ID token checked against {_e(issuer)}'>"
+                f"&#x2713; identity verified</span>")
+    if isinstance(getattr(sess, "contract", None), dict) and sess.contract.get("observed"):
+        return ""
+    return ("<span class='chip unk' title='Named by the calling code; no login system vouched for it'>"
+            "claimed, not verified</span>")
+
+
 def _session_status(actions: list[ActionRecord]) -> tuple[str, str]:
     """(css class, label) for a whole request."""
     violations = sum(1 for a in actions if not a.allowed)
@@ -360,7 +373,9 @@ def index_page(store: Store, limit: int = 50, verifier: Authority | None = None)
             "<tr>"
             f"<td><a class='req' href='{_link(s.session_id)}'>{_e(s.request)}</a>"
             f"<div class='muted mono'>{_e(s.session_id)}</div></td>"
-            f"<td>{_e(s.principal)}</td>"
+            f"<td>{_e(s.principal)}"
+            + (" <span class='ok' title='identity verified'>&#x2713;</span>" if s.verified else "")
+            + "</td>"
             f"<td>{len(actions)}</td>"
             f"<td><span class='chip {cls}'>{label}</span>"
             + (" <a class='chip fail' href='/audit'>&#x2717; altered after the fact</a>"
@@ -569,7 +584,8 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
                    "<a href='/audit'>See exactly what changed &rarr;</a></p></div>")
     body = (f"<p class='small'><a href='/'>&larr; All requests</a></p>"
             f"<div class='quote'>{_e(sess.request)}</div>"
-            f"<p class='muted'>asked by <strong>{_e(sess.principal)}</strong> &middot; "
+            f"<p class='muted'>asked by <strong>{_e(sess.principal)}</strong> "
+            f"{_identity_chip(sess)} &middot; "
             f"<span class='mono'>{_e(sess.started_at.isoformat())}</span> &middot; "
             f"<span class='mono'>{_e(sess.session_id)}</span> &middot; "
             f"<span class='chip {cls}'>{label}</span></p>"
