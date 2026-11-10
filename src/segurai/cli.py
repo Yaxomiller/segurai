@@ -7,6 +7,10 @@
     segurai report                   scope-creep report across sessions (M6)
     segurai keygen                   create a signing key
     segurai demo                     a made-up company, real records, in the browser
+    segurai init                     write segurai.toml and a signing key
+    segurai config check             check segurai.toml and print what it sets up
+    segurai serve                    run a deployment: dashboard, issuer, gateway, alerts
+    segurai users add|list|set       people who can sign in to the dashboard
     segurai audit                    check the tamper-evident log
     segurai checkpoint               sign the log's current state
     segurai collect                  receive spans from agents over OTLP/HTTP
@@ -395,6 +399,152 @@ def cmd_demo(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    """Write a commented segurai.toml and create the organisation's signing key."""
+    from .config import EXAMPLE
+
+    folder = Path(args.dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "segurai.toml"
+    if path.exists() and not args.force:
+        print(f"{path} already exists; pass --force to overwrite it.")
+        return 1
+    path.write_text(EXAMPLE, encoding="utf-8")
+    authority = Authority.load_or_create(folder / "segurai.key")
+    print(f"Wrote {path} and the organisation's key {folder / 'segurai.key'} ({authority.key_id}).")
+    print("Keep the .key file secret; share the .pub file with auditors. Next:")
+    print(f"  segurai config check --config {path}")
+    print(f"  segurai users add --config {path} --email you@example.com --role admin")
+    print(f"  segurai serve --config {path}")
+    return 0
+
+
+def _load_config(path: str):
+    from .config import ConfigError, load_config
+
+    try:
+        return load_config(path)
+    except ConfigError as exc:
+        print(f"Configuration problem: {exc}")
+        return None
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    from .serve import build
+
+    config = _load_config(args.config)
+    if config is None:
+        return 2
+    try:
+        deployment = build(config)
+    except Exception as exc:          # a port in use, an unreadable key...
+        print(f"The configuration reads correctly, but cannot start: {exc}")
+        return 2
+    try:
+        print(f"{args.config} is valid:")
+        for line in config.summary():
+            print(f"  {line}")
+        if config.dashboard and config.dashboard.local_accounts and not deployment.store.users():
+            print()
+            print("No accounts yet. Add the first admin:")
+            print(f"  segurai users add --config {args.config} --email you@example.com --role admin")
+    finally:
+        for target in (deployment.server, deployment.gateway):
+            if target is not None:
+                target.server_close()
+        deployment.store.close()
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    import signal
+    import threading
+
+    from .serve import build
+
+    config = _load_config(args.config)
+    if config is None:
+        return 2
+    try:
+        deployment = build(config)
+    except OSError as exc:
+        print(f"Cannot start: {exc}")
+        return 1
+    deployment.start()
+    print(f"Segurai is running from {args.config}")
+    for line in config.summary():
+        print(f"  {line}")
+    if config.dashboard and config.dashboard.local_accounts and not deployment.store.users():
+        print("  ! no accounts yet: segurai users add --config "
+              f"{args.config} --email you@example.com --role admin")
+    stop = threading.Event()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(signum, lambda *_: stop.set())
+        except ValueError:            # not the main thread (tests)
+            pass
+    try:
+        while not stop.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        pass
+    print("stopping")
+    deployment.stop()
+    return 0
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    import getpass
+    import os
+
+    from .collector.auth import AuthError, WebAuth
+
+    if args.config:
+        config = _load_config(args.config)
+        if config is None:
+            return 2
+        store = Store(config.server.database)
+    else:
+        store = _store(args)
+    auth = WebAuth(store)
+    try:
+        if args.action == "list":
+            users = store.users()
+            if not users:
+                print("No accounts.")
+            for u in users:
+                state = "disabled" if u["disabled"] else "active"
+                print(f"{u['email']:<36} {u['role']:<8} {u['source']:<6} {state}")
+            return 0
+        if not args.email:
+            print("--email is required")
+            return 2
+        password = None
+        if args.action == "add" or args.password_env or args.reset_password:
+            if args.password_env:
+                password = os.environ.get(args.password_env) or ""
+                if not password:
+                    print(f"{args.password_env} is not set")
+                    return 2
+            elif args.action == "add" or args.reset_password:
+                password = getpass.getpass("Password (12+ characters): ")
+                if password != getpass.getpass("Again: "):
+                    print("The passwords don't match.")
+                    return 2
+        if args.action == "add":
+            user = auth.add_user(args.email, args.role or "viewer", password=password, by="command line")
+        else:
+            user = auth.update_user(args.email, role=args.role, by="command line", password=password,
+                                    disabled={"yes": True, "no": False}.get(args.disabled or ""))
+        print(f"{user.email}: {user.role}{' (disabled)' if user.disabled else ''}")
+        return 0
+    except AuthError as exc:
+        print(f"Refused: {exc}")
+        return 1
+    finally:
+        store.close()
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Copy the database safely, even while the collector is writing to it."""
     out = Path(args.out)
@@ -643,6 +793,30 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     s.add_argument("--no-serve", action="store_true", help="build the demo database and stop")
     s.set_defaults(func=cmd_demo)
+
+    s = sub.add_parser("init", help="write a commented segurai.toml and a signing key")
+    s.add_argument("--dir", default=".", help="where to write them (default: here)")
+    s.add_argument("--force", action="store_true", help="overwrite an existing segurai.toml")
+    s.set_defaults(func=cmd_init)
+
+    s = sub.add_parser("config", help="check a configuration file")
+    s.add_argument("action", choices=["check"])
+    s.add_argument("--config", default="segurai.toml")
+    s.set_defaults(func=cmd_config)
+
+    s = sub.add_parser("serve", help="run a deployment from segurai.toml")
+    s.add_argument("--config", default="segurai.toml")
+    s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("users", help="people who can sign in to the dashboard")
+    s.add_argument("action", choices=["add", "list", "set"])
+    s.add_argument("--config", default=None, help="take the database from this configuration")
+    s.add_argument("--email")
+    s.add_argument("--role", choices=["viewer", "auditor", "admin"])
+    s.add_argument("--disabled", choices=["yes", "no"])
+    s.add_argument("--reset-password", action="store_true", help="with set: prompt for a new password")
+    s.add_argument("--password-env", help="read the password from this environment variable")
+    s.set_defaults(func=cmd_users)
 
     s = sub.add_parser("backup", help="copy the database safely while it is in use")
     s.add_argument("--out", required=True, help="where to write the copy")

@@ -29,6 +29,7 @@ license-files = ["LICENSE"]
 # so trying Segurai never drags a framework into someone's environment.
 dependencies = [
     "cryptography>=42.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -36,9 +37,11 @@ otel = ["opentelemetry-api>=1.30", "opentelemetry-sdk>=1.30"]
 langgraph = ["langgraph>=1.0"]
 mcp = ["mcp>=2.0"]
 collector = ["opentelemetry-proto>=1.30"]
+identity = ["pyjwt[crypto]>=2.8"]
+server = ["segurai[collector,identity]"]
 intent = ["anthropic>=1.5"]
 judge = ["anthropic>=1.5"]
-all = ["segurai[otel,langgraph,mcp,collector,intent,judge]"]
+all = ["segurai[otel,langgraph,mcp,collector,identity,intent,judge]"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
