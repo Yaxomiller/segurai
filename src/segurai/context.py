@@ -135,7 +135,7 @@ def import_warrant(token: str) -> Warrant:
 # ---- chain tokens -------------------------------------------------------------------
 
 def export_chain(leaf: Warrant | None = None, *, include_key: bool = True,
-                 chain: list[Warrant] | None = None) -> str:
+                 chain: list[Warrant] | None = None, authority: object = None) -> str:
     """Serialize a whole chain, root first, optionally with the leaf holder's private key.
 
     ``leaf`` defaults to the current warrant; its ancestors come from the
@@ -160,7 +160,8 @@ def export_chain(leaf: Warrant | None = None, *, include_key: bool = True,
 
     key = None
     if include_key:
-        _, authority = _rt.ensure()
+        if authority is None:
+            _, authority = _rt.ensure()
         private = authority.holder_private_key(leaf.warrant_id)
         if private is not None:
             from cryptography.hazmat.primitives import serialization

@@ -217,8 +217,12 @@ class IdentityVerifier:
                 keyset = self._keysets[issuer.issuer] = _KeySet(url, self._fetch)
             return keyset
 
-    def verify(self, token: str) -> Identity:
-        """Prove who ``token`` belongs to, or raise :class:`IdentityError` saying why not."""
+    def verify(self, token: str, nonce: str | None = None) -> Identity:
+        """Prove who ``token`` belongs to, or raise :class:`IdentityError` saying why not.
+
+        ``nonce`` is the value sent when a browser sign-in began; the token
+        must carry exactly it, so a token from another sign-in can't be swapped in.
+        """
         import jwt
 
         if not isinstance(token, str) or token.count(".") != 2 or len(token) > 16 * 1024:
@@ -256,6 +260,10 @@ class IdentityVerifier:
             raise IdentityError(f"the token does not verify: {exc}") from exc
         except (OSError, ValueError) as exc:
             raise IdentityError(f"could not fetch the issuer's signing keys: {exc}") from exc
+
+        if nonce is not None and not (isinstance(claims.get("nonce"), str)
+                                      and __import__("hmac").compare_digest(claims["nonce"], nonce)):
+            raise IdentityError("the token was not issued for this sign-in (nonce mismatch)")
 
         iat = claims.get("iat")
         if isinstance(iat, (int, float)) and iat > time.time() + issuer.leeway_seconds:

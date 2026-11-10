@@ -164,6 +164,52 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_due ON alerts(sent_at, failed_at, next_attempt_at);
 
+-- Dashboard accounts (collector/auth.py). In the tamper-evident log: who was
+-- made an admin, and by whom, is evidence too.
+CREATE TABLE IF NOT EXISTS users (
+    email           TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    role            TEXT NOT NULL,
+    password_hash   TEXT,
+    source          TEXT NOT NULL,
+    disabled        INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL,
+    updated_by      TEXT NOT NULL
+);
+
+-- Who opened which page, and who signed in (or failed to). Also in the log.
+CREATE TABLE IF NOT EXISTS access_log (
+    access_id       TEXT PRIMARY KEY,
+    at              TEXT NOT NULL,
+    email           TEXT NOT NULL,
+    method          TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    status          INTEGER NOT NULL,
+    ip              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_access_at ON access_log(at);
+
+-- Signed-in browsers. Only a hash of each session token is kept. Not logged:
+-- operational, short-lived, and the sign-in itself is in the access log.
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash      TEXT PRIMARY KEY,
+    email           TEXT NOT NULL,
+    csrf            TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,
+    ip              TEXT NOT NULL
+);
+
+-- Company sign-ins in progress: single use, valid for ten minutes.
+CREATE TABLE IF NOT EXISTS oidc_pending (
+    state           TEXT PRIMARY KEY,
+    nonce           TEXT NOT NULL,
+    verifier        TEXT NOT NULL,
+    next            TEXT NOT NULL,
+    binding         TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
 -- Small named values the server keeps between runs (the alert worker's cursor...).
 CREATE TABLE IF NOT EXISTS state (
     name            TEXT PRIMARY KEY,
@@ -186,6 +232,8 @@ _LOGGED_TABLES = {
     "action": ("actions", "action_id"),
     "verdict": ("verdicts", "action_id"),
     "policy": ("policies", "version"),
+    "user": ("users", "email"),
+    "access": ("access_log", "access_id"),
 }
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -528,6 +576,60 @@ class Store:
                           (since.isoformat(),))
         return [_row_to_session(r) for r in rows]
 
+    def search_sessions(self, *, q: str | None = None, agent: str | None = None,
+                        outcome: str | None = None, principal: str | None = None,
+                        limit: int = 50, offset: int = 0) -> tuple[list[SessionRow], int]:
+        """Sessions matching the filters, newest first, and how many match in all.
+
+        Matching happens in the database, so a page costs the same however
+        many requests have been recorded.
+        """
+        def like(text: str) -> str:
+            escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return f"%{escaped}%"
+
+        where, params = [], []
+        if q:
+            where.append("(s.request LIKE ? ESCAPE '\\' OR s.principal LIKE ? ESCAPE '\\' "
+                         "OR s.session_id LIKE ? ESCAPE '\\')")
+            params += [like(q)] * 3
+        if principal:
+            where.append("s.principal LIKE ? ESCAPE '\\'")
+            params.append(like(principal))
+        if agent:
+            where.append("EXISTS (SELECT 1 FROM warrants w WHERE w.session_id = s.session_id "
+                         "AND w.holder LIKE ? ESCAPE '\\')")
+            params.append(like(agent))
+        flagged = "EXISTS (SELECT 1 FROM actions a WHERE a.session_id = s.session_id AND a.allowed = 0"
+        unverifiable = ("EXISTS (SELECT 1 FROM actions a WHERE a.session_id = s.session_id "
+                        "AND a.findings_json LIKE '%\"status\": \"unverifiable\"%' "
+                        "AND a.findings_json NOT LIKE '%\"check\": \"warrant\"%')")
+        conditions = {
+            "flagged": flagged + " AND a.blocked = 0)",
+            "blocked": flagged + " AND a.blocked = 1)",
+            "review": unverifiable,
+            "clean": "NOT " + flagged + ") AND NOT " + unverifiable,
+            "verified": "s.identity_json IS NOT NULL",
+        }
+        if outcome in conditions:
+            where.append(conditions[outcome])
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        total = int(self._read(f"SELECT COUNT(*) AS n FROM sessions s{clause}", tuple(params))[0]["n"])
+        rows = self._read(f"SELECT s.* FROM sessions s{clause} ORDER BY s.started_at DESC LIMIT ? OFFSET ?",
+                          (*params, max(1, min(limit, 500)), max(0, offset)))
+        return [_row_to_session(r) for r in rows], total
+
+    def stats(self) -> dict[str, int]:
+        """Headline counts across everything recorded."""
+        row = self._read(
+            "SELECT (SELECT COUNT(*) FROM sessions) AS sessions, COUNT(*) AS actions, "
+            "COALESCE(SUM(CASE WHEN allowed = 0 AND blocked = 0 THEN 1 ELSE 0 END), 0) AS flagged, "
+            "COALESCE(SUM(CASE WHEN blocked = 1 THEN 1 ELSE 0 END), 0) AS blocked, "
+            "COALESCE(SUM(CASE WHEN findings_json LIKE '%\"status\": \"unverifiable\"%' "
+            "AND findings_json NOT LIKE '%\"check\": \"warrant\"%' THEN 1 ELSE 0 END), 0) AS unk "
+            "FROM actions")[0]
+        return {k: int(row[k]) for k in ("sessions", "actions", "flagged", "blocked", "unk")}
+
     def sessions(self, limit: int = 50) -> list[SessionRow]:
         rows = self._read("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,))
         return [_row_to_session(r) for r in rows]
@@ -626,6 +728,74 @@ class Store:
         return [_row_to_action(r) for r in rows]
 
     # ---- analysis ----------------------------------------------------
+
+    # ---- dashboard accounts (auth.py) ----------------------------------------
+
+    def put_user(self, email: str, name: str, role: str, password_hash: str | None, source: str,
+                 *, disabled: bool, by: str) -> None:
+        self._write_row("users", {
+            "email": email, "name": name, "role": role, "password_hash": password_hash,
+            "source": source, "disabled": int(disabled), "updated_at": utcnow().isoformat(),
+            "updated_by": by,
+        }, kind="user", ref_id=email)
+
+    def get_user(self, email: str) -> dict | None:
+        rows = self._read("SELECT * FROM users WHERE email = ?", (email,))
+        return dict(rows[0]) if rows else None
+
+    def users(self) -> list[dict]:
+        return [dict(r) for r in self._read("SELECT * FROM users ORDER BY email")]
+
+    def put_web_session(self, token_hash: str, email: str, csrf: str, expires_at: datetime, ip: str) -> None:
+        now = utcnow().isoformat()
+        with self._lock:
+            # Expired sessions are swept whenever a new one starts.
+            self._conn.execute("DELETE FROM web_sessions WHERE expires_at <= ?", (now,))
+            self._conn.execute("INSERT INTO web_sessions VALUES (?, ?, ?, ?, ?, ?)",
+                               (token_hash, email, csrf, now, expires_at.isoformat(), ip))
+            self._conn.commit()
+
+    def get_web_session(self, token_hash: str) -> dict | None:
+        rows = self._read("SELECT * FROM web_sessions WHERE token_hash = ?", (token_hash,))
+        return dict(rows[0]) if rows else None
+
+    def end_web_session(self, token_hash: str) -> None:
+        self._write("DELETE FROM web_sessions WHERE token_hash = ?", (token_hash,))
+
+    def end_web_sessions(self, email: str) -> None:
+        self._write("DELETE FROM web_sessions WHERE email = ?", (email,))
+
+    def put_oidc_pending(self, state: str, nonce: str, verifier: str, next_path: str, binding: str) -> None:
+        cutoff = (utcnow() - timedelta(minutes=10)).isoformat()
+        with self._lock:
+            self._conn.execute("DELETE FROM oidc_pending WHERE created_at < ?", (cutoff,))
+            self._conn.execute("INSERT INTO oidc_pending VALUES (?, ?, ?, ?, ?, ?)",
+                               (state, nonce, verifier, next_path, binding, utcnow().isoformat()))
+            self._conn.commit()
+
+    def take_oidc_pending(self, state: str) -> dict | None:
+        """The sign-in started with ``state``, removed as it is read: it can't be used twice."""
+        cutoff = (utcnow() - timedelta(minutes=10)).isoformat()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM oidc_pending WHERE state = ? AND created_at >= ?",
+                                      (state, cutoff)).fetchall()
+            self._conn.execute("DELETE FROM oidc_pending WHERE state = ?", (state,))
+            self._conn.commit()
+        return dict(rows[0]) if rows else None
+
+    def put_access(self, access_id: str, email: str, method: str, path: str, status: int, ip: str) -> None:
+        self._write_row("access_log", {
+            "access_id": access_id, "at": utcnow().isoformat(), "email": email, "method": method,
+            "path": path, "status": status, "ip": ip,
+        }, kind="access", ref_id=access_id)
+
+    def access_log(self, limit: int = 200, email: str | None = None) -> list[dict]:
+        if email:
+            rows = self._read("SELECT * FROM access_log WHERE email = ? ORDER BY at DESC LIMIT ?",
+                              (email, limit))
+        else:
+            rows = self._read("SELECT * FROM access_log ORDER BY at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
 
     # ---- alerts (alerts.py) -----------------------------------------------
 

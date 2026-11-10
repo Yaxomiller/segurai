@@ -35,10 +35,12 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from ..authority import Authority, ChainError, verify_chain
 from ..models import ActionRecord, Finding, Scope, Warrant, utcnow
@@ -46,11 +48,22 @@ from .chain import build_tree
 from .ledger import AuditReport
 from .store import Store
 
-__all__ = ["index_page", "session_page", "audit_page", "permissions_page", "CSP"]
+__all__ = ["index_page", "session_page", "audit_page", "permissions_page", "login_page",
+           "users_page", "access_page", "message_page", "CSP", "current_viewer"]
+
+#: The signed-in person the page is being drawn for (a WebSession), set by the
+#: server for each request. None when the dashboard runs without accounts.
+current_viewer: ContextVar = ContextVar("segurai_viewer", default=None)
+
+
+def _can(role: str) -> bool:
+    """Whether the current viewer holds ``role``. Without accounts, everything shows."""
+    viewer = current_viewer.get()
+    return viewer is None or viewer.user.can(role)
 
 #: Sent with every page: no scripts, no external anything, only our own inline styles.
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; "
-       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 _STYLE = """
 :root { --bg:#f6f6f3; --fg:#18181b; --muted:#6b6b72; --line:#e4e4df; --card:#ffffff;
@@ -153,6 +166,19 @@ ul.plain { margin:0; padding-left:18px; }
 .perm.unused { background:var(--fail-bg); color:var(--fail); text-decoration:line-through; }
 .big { font-size:26px; font-weight:700; letter-spacing:-.02em; }
 footer { max-width:1240px; margin:0 auto; padding:8px 24px 32px; color:var(--muted); font-size:12.5px; }
+input, select, button { font:inherit; font-size:14px; padding:6px 10px; border:1px solid var(--line);
+         border-radius:8px; background:var(--card); color:var(--fg); }
+button { cursor:pointer; background:var(--soft); }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+form.inline { display:inline; margin:0; }
+.filters { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px; }
+.filters input[type=search] { min-width:240px; flex:1; }
+.pager { display:flex; justify-content:space-between; align-items:center; margin-top:12px; }
+.who { font-size:13px; color:var(--muted); display:flex; gap:8px; align-items:center; }
+.login { max-width:420px; margin:40px auto; }
+.login label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+.login input { width:100%; }
+.error { color:var(--fail); background:var(--fail-bg); border-radius:8px; padding:8px 12px; margin-bottom:12px; }
 """
 
 
@@ -167,9 +193,23 @@ def _link(session_id: str) -> str:
 
 # ---- what every page shares ------------------------------------------------------
 
-def _integrity(store: Store, verifier: Authority | None) -> AuditReport:
-    """The tamper-evident log's audit. Cheap at pilot scale; read on every page."""
-    return store.audit(verifier)
+_AUDIT_CACHE: dict[int, tuple[float, int, AuditReport]] = {}
+#: How long the integrity chip in the header may be stale. The audit page,
+#: evidence packs and alerts always run a fresh audit.
+AUDIT_CACHE_SECONDS = 20.0
+
+
+def _integrity(store: Store, verifier: Authority | None, fresh: bool = False) -> AuditReport:
+    """The tamper-evident log's audit, re-run at most every few seconds for page headers."""
+    key = id(store)
+    head, _ = store.ledger_head()
+    cached = _AUDIT_CACHE.get(key)
+    if (not fresh and cached is not None and cached[1] == head
+            and time.monotonic() - cached[0] < AUDIT_CACHE_SECONDS):
+        return cached[2]
+    report = store.audit(verifier)
+    _AUDIT_CACHE[key] = (time.monotonic(), head, report)
+    return report
 
 
 def _integrity_chip(report: AuditReport) -> str:
@@ -197,18 +237,30 @@ def _page(title: str, body: str, *, store: Store | None = None, verifier: Author
                       "produced by real Segurai code: signed warrants, Tier 1 checks, the hash-chained "
                       "log. The company, people and requests are made up, and the compiled contracts "
                       "and AI reviews are pre-written samples, labelled wherever they appear.</div>")
+    viewer = current_viewer.get()
+    items = [("overview", "/", "Overview", "viewer"), ("permissions", "/permissions", "Permissions", "viewer"),
+             ("audit", "/audit", "Record integrity", "auditor")]
+    if viewer is not None:
+        items += [("access", "/access", "Access log", "auditor"), ("people", "/admin/users", "People", "admin")]
     nav = "".join(
         f"<a href='{href}'{' class=on' if current == key else ''}>{label}</a>"
-        for key, href, label in (("overview", "/", "Overview"), ("permissions", "/permissions", "Permissions"),
-                                 ("audit", "/audit", "Record integrity"))
+        for key, href, label, role in items if _can(role)
     )
+    who = ""
+    if viewer is not None:
+        who = (f"<span class='who'>{_e(viewer.user.email)} &middot; {_e(viewer.user.role)}"
+               f"<form class='inline' method='post' action='/logout'>"
+               f"<input type='hidden' name='csrf' value='{_e(viewer.csrf)}'>"
+               f"<button type='submit'>Sign out</button></form></span>")
+    if not _can("auditor"):
+        chip = ""          # integrity details are for auditors
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{_e(title)}</title><style>{_STYLE}</style></head><body>"
         "<header><div class='bar'><a class='brand' href='/'>Segurai</a>"
         "<span class='tag'>who authorized what your agents did</span>"
-        f"<nav>{nav}</nav><span class='spacer'></span>{chip}</div></header>"
+        f"<nav>{nav}</nav><span class='spacer'></span>{chip}{who}</div></header>"
         f"<main>{banner}{body}</main>"
         "<footer>Read-only view &middot; no scripts on any page &middot; "
         "signatures and the record log are re-checked on every load.</footer>"
@@ -348,21 +400,42 @@ def _judge_html(verdict: Any) -> str:
 
 # ---- the overview ------------------------------------------------------------------
 
-def index_page(store: Store, limit: int = 50, verifier: Authority | None = None) -> str:
-    """Headline numbers, then every recent request, newest first."""
-    sessions = store.sessions(limit=limit)
+OUTCOMES = (("", "Any outcome"), ("flagged", "Went beyond the request"), ("blocked", "Stopped"),
+            ("review", "Needs a look"), ("clean", "Clean"), ("verified", "Identity verified"))
+
+
+def _filters_html(filters: dict[str, str]) -> str:
+    options = "".join(f"<option value='{v}'{' selected' if filters.get('outcome') == v else ''}>{label}</option>"
+                      for v, label in OUTCOMES)
+    return ("<form class='filters' method='get' action='/'>"
+            f"<input type='search' name='q' placeholder='Search requests, people, session ids' "
+            f"value='{_e(filters.get('q', ''))}' maxlength='200'>"
+            f"<input type='text' name='agent' placeholder='Agent' value='{_e(filters.get('agent', ''))}' "
+            f"maxlength='100'>"
+            f"<select name='outcome'>{options}</select>"
+            "<button type='submit'>Filter</button>"
+            + ("<a href='/' class='small'>Clear</a>" if any(filters.values()) else "")
+            + "</form>")
+
+
+def index_page(store: Store, limit: int = 50, verifier: Authority | None = None,
+               filters: dict[str, str] | None = None) -> str:
+    """Headline numbers, then every request matching the filters, newest first, a page at a time."""
+    filters = {k: v for k, v in (filters or {}).items() if k in ("q", "agent", "outcome", "page") and v}
+    try:
+        page = max(1, min(int(filters.pop("page", "1")), 10_000))
+    except ValueError:
+        page = 1
+    sessions, total = store.search_sessions(q=filters.get("q"), agent=filters.get("agent"),
+                                            outcome=filters.get("outcome"), limit=limit,
+                                            offset=(page - 1) * limit)
     integrity = _integrity(store, verifier)
     altered = {_problem_session(store, p.kind, p.ref_id) for p in integrity.problems}
     rows = []
-    totals = {"actions": 0, "flagged": 0, "blocked": 0, "unk": 0}
+    totals = store.stats()
     for s in sessions:
         actions = store.actions_for_session(s.session_id)
         verdicts = store.verdicts_for_session(s.session_id)
-        totals["actions"] += len(actions)
-        totals["flagged"] += sum(1 for a in actions if not a.allowed and not a.blocked)
-        totals["blocked"] += sum(1 for a in actions if a.blocked)
-        totals["unk"] += sum(1 for a in actions for f in a.findings
-                             if f.status == "unverifiable" and f.check != "warrant")
         cls, label = _session_status(actions)
         review = ""
         if verdicts:
@@ -392,7 +465,7 @@ def index_page(store: Store, limit: int = 50, verifier: Authority | None = None)
                       f"<div class='l'>{integrity.entries} records, none altered</div></a>")
     tiles = (
         "<div class='tiles'>"
-        f"<div class='tile'><div class='n'>{len(sessions)}</div><div class='l'>Requests from people</div></div>"
+        f"<div class='tile'><div class='n'>{totals['sessions']}</div><div class='l'>Requests from people</div></div>"
         f"<div class='tile'><div class='n'>{totals['actions']}</div><div class='l'>Agent actions recorded</div></div>"
         f"<div class='tile'><div class='n fail'>{totals['flagged']}</div><div class='l'>Went beyond the request</div></div>"
         f"<div class='tile'><div class='n blocked'>{totals['blocked']}</div><div class='l'>Stopped before they happened</div></div>"
@@ -405,12 +478,21 @@ def index_page(store: Store, limit: int = 50, verifier: Authority | None = None)
                  "<th>Actions</th><th>Outcome</th><th>AI review</th><th>When (UTC)</th></tr></thead>"
                  f"<tbody>{''.join(rows)}</tbody></table></div>")
     else:
-        table = "<p class='muted'>No sessions recorded yet.</p>"
+        table = ("<p class='muted'>No requests match these filters.</p>" if filters
+                 else "<p class='muted'>No sessions recorded yet.</p>")
+    pages = max(1, -(-total // limit))
+    query = {k: v for k, v in filters.items()}
+    prev_link = (f"<a href='/?{_e(urlencode({**query, 'page': page - 1}))}'>&larr; Newer</a>"
+                 if page > 1 else "<span></span>")
+    next_link = (f"<a href='/?{_e(urlencode({**query, 'page': page + 1}))}'>Older &rarr;</a>"
+                 if page < pages else "<span></span>")
+    pager = (f"<div class='pager small'>{prev_link}<span class='muted'>{total} request(s) &middot; "
+             f"page {page} of {pages}</span>{next_link}</div>")
     body = ("<h1>Every agent action, traced to the person who asked</h1>"
             "<p class='lede'>Each request below is linked to the agents it set in motion and everything "
             "they did. Anything that went beyond the request is flagged, and the record itself is "
             "tamper-evident.</p>"
-            f"{tiles}<div class='card'><h2>Sessions</h2>{table}</div>")
+            f"{tiles}<div class='card'><h2>Sessions</h2>{_filters_html(filters)}{table}{pager}</div>")
     return _page("Segurai - sessions", body, store=store, verifier=verifier, current="overview",
                  integrity=integrity)
 
@@ -589,7 +671,10 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
             f"<span class='mono'>{_e(sess.started_at.isoformat())}</span> &middot; "
             f"<span class='mono'>{_e(sess.session_id)}</span> &middot; "
             f"<span class='chip {cls}'>{label}</span></p>"
-            f"{warning}{_story_html(actions, verdicts)}"
+            + (f"<p class='small'><a href='{_link(session_id)}/evidence.zip'>Download the evidence pack</a> "
+               "<span class='muted'>&middot; a file an auditor can check on its own</span></p>"
+               if _can("auditor") and current_viewer.get() is not None else "")
+            + f"{warning}{_story_html(actions, verdicts)}"
             f"<div class='grid'><div>{''.join(left)}</div><div>{right}</div></div>")
     return _page(f"Segurai - {sess.request}", body, store=store, verifier=verifier,
                  integrity=integrity)
@@ -597,9 +682,9 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
 
 # ---- record integrity -----------------------------------------------------------------
 
-def audit_page(store: Store, verifier: Authority | None = None) -> str:
+def audit_page(store: Store, verifier: Authority | None = None, witnessed: list | None = None) -> str:
     """Whether anything was edited or deleted after it was written."""
-    report = _integrity(store, verifier)
+    report = store.audit(verifier, witnessed=witnessed) if witnessed else _integrity(store, verifier, fresh=True)
     if not report.ok:
         status = ("<div class='card story'><div class='big fail'>&#x2717; Tampering detected</div>"
                   "<p>Records were changed after they were written. The pages elsewhere show the "
@@ -726,3 +811,87 @@ def permissions_page(store: Store, verifier: Authority | None = None, days: int 
             "was unused.</p>"
             f"{headline}{''.join(cards) or '<p class=muted>Nothing recorded in this window.</p>'}")
     return _page("Segurai - permissions", body, store=store, verifier=verifier, current="permissions")
+
+
+# ---- signing in, people, the access log -------------------------------------------------------
+
+def message_page(title: str, message: str, status_class: str = "") -> str:
+    body = f"<div class='card login'><h1>{_e(title)}</h1><p class='{status_class}'>{_e(message)}</p>" \
+           f"<p><a href='/'>Back to the overview</a></p></div>"
+    return _page(f"Segurai - {title}", body)
+
+
+def login_page(csrf: str, *, error: str = "", next_path: str = "/", local: bool = True,
+               oidc_label: str | None = None) -> str:
+    parts = ["<div class='card login'><h1>Sign in to Segurai</h1>"]
+    if error:
+        parts.append(f"<div class='error'>{_e(error)}</div>")
+    if oidc_label:
+        parts.append(f"<p><a class='chip ok' style='font-size:14px;padding:8px 14px' "
+                     f"href='/auth/start?{_e(urlencode({'next': next_path}))}'>Sign in with {_e(oidc_label)}</a></p>")
+    if local:
+        parts.append(
+            "<form method='post' action='/login'>"
+            f"<input type='hidden' name='csrf' value='{_e(csrf)}'>"
+            f"<input type='hidden' name='next' value='{_e(next_path)}'>"
+            "<label for='email'>Email</label><input id='email' name='email' type='email' required "
+            "autocomplete='username' maxlength='254'>"
+            "<label for='password'>Password</label><input id='password' name='password' type='password' "
+            "required autocomplete='current-password' maxlength='200'>"
+            "<p style='margin-top:14px'><button class='primary' type='submit'>Sign in</button></p></form>")
+    parts.append("</div>")
+    return _page("Segurai - sign in", "".join(parts))
+
+
+def users_page(store: Store, *, csrf: str, message: str = "", error: str = "") -> str:
+    from .auth import ROLES
+
+    rows = []
+    for u in store.users():
+        options = "".join(f"<option value='{r}'{' selected' if r == u['role'] else ''}>{r}</option>" for r in ROLES)
+        state = "<span class='chip fail'>disabled</span>" if u["disabled"] else "<span class='chip ok'>active</span>"
+        rows.append(
+            f"<tr><td>{_e(u['email'])}</td><td>{_e(u['source'])}</td><td>{state}</td><td>"
+            f"<form class='inline' method='post' action='/admin/users'>"
+            f"<input type='hidden' name='csrf' value='{_e(csrf)}'><input type='hidden' name='action' value='update'>"
+            f"<input type='hidden' name='email' value='{_e(u['email'])}'>"
+            f"<select name='role'>{options}</select> "
+            f"<select name='disabled'><option value='0'{' selected' if not u['disabled'] else ''}>active</option>"
+            f"<option value='1'{' selected' if u['disabled'] else ''}>disabled</option></select> "
+            f"<button type='submit'>Save</button></form></td>"
+            f"<td class='muted small'>{_e(u['updated_at'][:16])} by {_e(u['updated_by'])}</td></tr>")
+    role_options = "".join(f"<option value='{r}'>{r}</option>" for r in ROLES)
+    body = ("<h1>People</h1><p class='lede'>Who can see this dashboard, and what they can do. Every change "
+            "here is written to the tamper-evident log.</p>"
+            + (f"<div class='error'>{_e(error)}</div>" if error else "")
+            + (f"<p class='ok'>{_e(message)}</p>" if message else "")
+            + "<div class='card'><div class='table-wrap'><table><thead><tr><th>Email</th><th>Signs in with</th>"
+              "<th>State</th><th>Role</th><th>Last change</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table></div></div>"
+            "<div class='card'><h2>Add a person with a password</h2>"
+            "<form method='post' action='/admin/users' class='filters'>"
+            f"<input type='hidden' name='csrf' value='{_e(csrf)}'><input type='hidden' name='action' value='create'>"
+            "<input name='email' type='email' placeholder='email' required maxlength='254'>"
+            f"<select name='role'>{role_options}</select>"
+            "<input name='password' type='password' placeholder='temporary password (12+ characters)' "
+            "required minlength='12' maxlength='200' autocomplete='new-password'>"
+            "<button class='primary' type='submit'>Add</button></form>"
+            "<p class='muted small'>People who sign in with the company login system are added "
+            "automatically, with the role their groups map to.</p></div>")
+    return _page("Segurai - people", body, store=store, current="people")
+
+
+def access_page(store: Store, email: str | None = None) -> str:
+    rows = "".join(
+        f"<tr><td class='mono'>{_e(r['at'][:19])}</td><td>{_e(r['email'])}</td><td>{_e(r['method'])}</td>"
+        f"<td class='mono'>{_e(r['path'])}</td><td>{_e(r['status'])}</td><td class='mono muted'>{_e(r['ip'])}</td></tr>"
+        for r in store.access_log(limit=300, email=email))
+    body = ("<h1>Access log</h1><p class='lede'>Who opened which page, and every sign-in - successful or "
+            "not. These entries are part of the tamper-evident log too.</p>"
+            "<form class='filters' method='get' action='/access'>"
+            f"<input type='search' name='email' placeholder='Filter by email' value='{_e(email or '')}'>"
+            "<button type='submit'>Filter</button></form>"
+            "<div class='card'><div class='table-wrap'><table><thead><tr><th>When (UTC)</th><th>Who</th>"
+            "<th>Did</th><th>Page</th><th>Result</th><th>From</th></tr></thead><tbody>"
+            f"{rows or '<tr><td colspan=6 class=muted>Nothing yet.</td></tr>'}</tbody></table></div></div>")
+    return _page("Segurai - access log", body, store=store, current="access")

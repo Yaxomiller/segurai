@@ -55,7 +55,7 @@ GENESIS = "0" * 64
 #: Tables whose rows are evidence and therefore logged. Raw OpenTelemetry
 #: spans are deliberately not: they are the raw INPUT, and the sessions,
 #: warrants and actions rebuilt from them are logged instead.
-LOGGED_KINDS = ("session", "warrant", "action", "verdict", "policy")
+LOGGED_KINDS = ("session", "warrant", "action", "verdict", "policy", "user", "access")
 
 
 def canonical_bytes(payload: Mapping[str, Any]) -> bytes:
