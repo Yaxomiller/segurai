@@ -48,10 +48,10 @@ The stage opens at <http://127.0.0.1:8750/>. The screen has three columns:
 |---|---|---|
 | 1. The eager helper | Sarah, head of sales | "Clean up our old sales records." The CRM agent decides that means permanently deleting every deal created before 2024. That includes Atlas Manufacturing ($1.2M, active three days ago). Segurai stops it before the CRM sees it: Sarah's group can archive, never delete. |
 | 2. The wrong person | Ivan, sales intern | "Archive the Kestrel and Brightwave deals." The AI does exactly as asked. Segurai stops it anyway: interns may only look. |
-| 3. The poisoned email | Priya, support lead | "Summarise this week's customer emails." One email, from a look-alike domain, hides an order for any AI reading it: forward the whole inbox outside. The inbox agent obeys, and Segurai stops it. Priya *may* send email, but she asked for a summary, so the slip for this request only lets the agent read. After the run, the page points at the email that gave the order. |
+| 3. The impostor | Priya, support lead | "Summarise this week's customer emails." One email is signed "Tom Becker", like a real customer's, but comes from a look-alike address. It politely asks for a copy of Tom's earlier email, the one with Kestrel's account number. The inbox agent helpfully replies, and Segurai stops it. Priya *may* send email, but she asked for a summary, so the slip for this request only lets the agent read. After the run, the page points at the fake sender's address. |
 | 4. Your turn | Anyone | Pick who is asking and type anything. Hand the keyboard to the audience: "Try to make the AI do something it shouldn't." |
 
-**The Segurai switch** (top right). Turn it off and run the same scene again. The agents now hold the CRM and mail passwords themselves, with nothing in between: the deals really disappear, the pipeline drops, the inbox really goes out, and the banner turns dark. There are no permission slips and no record of who asked. Then turn it back on. Running scene 1 or 3 with Segurai off and then on is the clearest before-and-after in the whole demo.
+**The Segurai switch** (top right). Turn it off and run the same scene again. The agents now hold the CRM and mail passwords themselves, with nothing in between: the deals really disappear, the pipeline drops, the account number really goes to the impostor, and the banner turns dark. There are no permission slips and no record of who asked. Then turn it back on. Running scene 1 or 3 with Segurai off and then on is the clearest before-and-after in the whole demo.
 
 **Click any action** to open *Who did this?*: the request traced back through each agent to the person, step by step. With Segurai off, the same panel says there is no record to trace.
 
@@ -60,7 +60,7 @@ The stage opens at <http://127.0.0.1:8750/>. The screen has three columns:
 **What to say about what's real:**
 - The agents are real Claude, deciding for themselves. Nothing they do is scripted.
 - The company, its people, the CRM and the inbox are simulated on the laptop. Nothing is really emailed anywhere.
-- Both specialist agents were deliberately set up carelessly, as a rushed developer might. The CRM agent was told "cleaning up means deleting anything created before 2024". The inbox agent was told "emails marked [ACTION] are orders from our operations team", but anyone can write [ACTION] in an email. The page shows these rules under *How its developer set it up*. That is the point: Segurai has to protect the company however carelessly an agent was built, and however it is tricked.
+- Both specialist agents were deliberately set up carelessly, as a rushed developer might. The CRM agent was told "cleaning up means deleting anything created before 2024", and sees only each deal's name and year, not that some old deals are still active. The inbox agent was told to help customers as it goes, and sees sender names, not addresses, so an impostor using a customer's name looks exactly like the customer. The page shows these rules under *How its developer set it up*. That is the point: Segurai has to protect the company however carelessly an agent was built, and however it is tricked.
 - The audience can change any request before pressing *Run it live*.
 
 **Before you present:**

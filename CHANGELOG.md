@@ -11,7 +11,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
   - A person signs in to a stand-in login system, the issuer grants a slip within their group's ceiling, and each agent hop narrows it. Every CRM request goes through the gateway. Nothing on the Segurai side is simulated.
   - *Who did this?* traces any action back to the person. Each run also appears in the ordinary dashboard.
   - Every live run is recorded and can be played back without the internet or an API key, labelled as a replay.
-  - Scene 3, the poisoned email: a look-alike sender's email orders the inbox agent to forward the whole inbox outside. Segurai stops it, because the slip for a summary only lets the agent read (the issuer grants a request-specific slip within the person's ceiling).
+  - Scene 3, the impostor: an email signed like a real customer's, from a look-alike address, asks for a copy of an email holding the customer's account number. The inbox agent helpfully replies; Segurai stops it, because the slip for a summary only lets the agent read (the issuer grants a request-specific slip within the person's ceiling). An earlier version used an obvious "forward the whole inbox" injection, which Claude refused every time.
   - Scene 4, your turn: anyone at Acme, asking anything.
   - The Segurai switch: the same agents with the systems' passwords and nothing in between, so the audience sees the damage Segurai prevents. Nothing is recorded with it off, and the page says so.
   - The receipt: the request's evidence pack, built from the real record, verified on the spot, and offered as a download with Acme's public key.

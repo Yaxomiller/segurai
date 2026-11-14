@@ -611,6 +611,7 @@ function onTry(e) {
   what.append(el("span", "pill wait", S.guarded ? "checking" : "unchecked"));
   li.append(what);
   if (e.names && e.names.length && e.verb !== "read") li.append(el("div", "names", e.names.join(", ")));
+  if (e.quote) li.append(el("div", "reason", "It wrote: “" + e.quote + "”"));
   if (e.reason) li.append(el("div", "reason", "Its reason: “" + e.reason + "”"));
   li.onclick = () => openTrace(e.call);
   list.append(li);
@@ -632,8 +633,10 @@ function onResult(e) {
     li.append(why);
     follow(li);
     const isMail = e.verb === "send";
+    const what = (S.tries[e.call] || {}).what || "";
+    const action = isMail ? (what.startsWith("Reply") ? "reply" : what.startsWith("Forward") ? "forward" : "send") : e.verb;
     for (const id of e.ids || []) {
-      const tr = setStatus(id, (isMail ? "forward" : e.verb) + " stopped", "stop");
+      const tr = setStatus(id, action + " stopped", "stop");
       if (tr) tr.classList.add("blocked", "flash");
       (isMail ? S.keptEmails : S.keptDeals).add(id);
     }
@@ -657,18 +660,23 @@ function showStopBanner(e) {
   $("banner-icon").textContent = "✋";
   $("banner-title").textContent = "Stopped before it happened";
   const who = e.agent === "inbox_agent" ? "The inbox agent" : "The CRM agent";
-  const did = e.verb === "send" ? (e.ids && e.ids.length ? "send " + plural(e.ids.length, "customer email") + " to " + e.to : "send an email to " + e.to)
+  const what = (S.tries[e.call] || {}).what || "";
+  const did = e.verb === "send" ? what.charAt(0).toLowerCase() + what.slice(1)
                                 : e.verb + " " + plural((e.ids || []).length, "deal");
   $("banner-text").textContent = who + " tried to " + did + ". " + (e.why[0] || "");
   updateKept();
 }
 
+// The big figure on the banner: money when deals were at stake, otherwise
+// what stayed in. Never "$0".
 function updateKept() {
   let value = 0;
   for (const id of S.keptDeals) value += (S.deals[id] || {}).value || 0;
   const emails = S.keptEmails.size + S.keptSends;
-  if (value || !emails) { $("kept").textContent = money(value); $("kept-label").textContent = "of deals kept safe"; }
-  else { $("kept").textContent = plural(emails, "email"); $("kept-label").textContent = "kept inside Acme"; }
+  if (value) { $("kept").textContent = money(value); $("kept-label").textContent = "of deals kept safe"; }
+  else if (S.keptDeals.size) { $("kept").textContent = plural(S.keptDeals.size, "deal"); $("kept-label").textContent = "kept safe"; }
+  else if (emails > 1) { $("kept").textContent = plural(emails, "email"); $("kept-label").textContent = "kept inside Acme"; }
+  else { $("kept").textContent = "Nothing"; $("kept-label").textContent = "left Acme"; }
 }
 
 function onChange(e) {
@@ -700,7 +708,7 @@ function showLossBanner(e) {
     $("banner-text").textContent = plural(S.lostDeals.size, "deal") + " gone, and no record of who asked.";
   } else {
     $("kept").textContent = plural(S.leaked.size, "email"); $("kept-label").textContent = "sent outside Acme";
-    $("banner-text").textContent = "Customer emails went to " + (e.to || "an outside address") + ", and no record of who asked.";
+    $("banner-text").textContent = "Customer data went to " + (e.to || "an outside address") + ", and no record of who asked.";
   }
 }
 
@@ -723,7 +731,7 @@ function onEnd(e) {
     for (const m of Object.values(S.emails)) {
       const tr = $("mail-" + m.id);
       if (!m.trap || !tr || tr.querySelector(".tag-out")) continue;
-      tr.querySelector("td.wrap + td.wrap").append(el("span", "tag-out", "⚠ hidden instruction for AI"));
+      tr.querySelector("td.wrap + td.wrap").append(el("span", "tag-out", "⚠ " + (typeof m.trap === "string" ? m.trap : "a trap for AI")));
     }
   }
   if (e.outcome && e.outcome.stopped && S.guarded) {
