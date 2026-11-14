@@ -15,3 +15,7 @@ venv/
 
 # Local editor/assistant settings
 .claude/
+
+# Folders `segurai demo` and `segurai stage` create where they are run
+segurai-demo/
+segurai-stage/
