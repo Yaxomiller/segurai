@@ -432,8 +432,16 @@ def cmd_stage(args: argparse.Namespace) -> int:
     runs play back without either.
     """
     from .stage.agents import DEFAULT_EFFORT, DEFAULT_MODEL
-    from .stage.show import serve_stage
+    from .stage.show import rehearse, serve_stage
 
+    if args.rehearse is not None:
+        if not 1 <= args.rehearse <= 10:
+            print("--rehearse takes a number from 1 to 10")
+            return 2
+        print(f"Rehearsing scenes 1-3, {args.rehearse} run(s) each, with real Claude. This takes a few "
+              f"minutes and costs a few cents per run.")
+        return rehearse(args.dir, rounds=args.rehearse, model=args.model or DEFAULT_MODEL,
+                        effort=args.effort or DEFAULT_EFFORT)
     return serve_stage(args.dir, port=args.port, model=args.model or DEFAULT_MODEL,
                        effort=args.effort or DEFAULT_EFFORT, open_browser=not args.no_browser)
 
@@ -890,6 +898,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"],
                    help="how hard the agents think (default low, which keeps each step quick)")
     s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    s.add_argument("--rehearse", type=int, metavar="N", default=None,
+                   help="instead of opening the stage, run scenes 1-3 N times each with real Claude "
+                        "and report how each went (each run costs a few cents and is recorded)")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("init", help="write a commented segurai.toml and a signing key")

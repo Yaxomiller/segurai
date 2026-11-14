@@ -15,6 +15,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
   - Scene 4, your turn: anyone at Acme, asking anything.
   - The Segurai switch: the same agents with the systems' passwords and nothing in between, so the audience sees the damage Segurai prevents. Nothing is recorded with it off, and the page says so.
   - The receipt: the request's evidence pack, built from the real record, verified on the spot, and offered as a download with Acme's public key.
+  - `segurai stage --rehearse N` runs scenes 1-3 N times with real Claude and reports how each went, recording every run for replay.
+  - The assistant routes the person's own words to a specialist instead of rewording them, and each specialist sees only the fields its developer chose (the CRM agent can't see a deal's value or activity; the inbox agent can't see sender addresses). The page shows both, so the audience sees what the agent can't.
+
+### Fixed
+
+- The stage server answered some refused requests before reading them, which on Windows could reset the connection before the browser saw the refusal.
 
 ## [0.4.0] — 2026-11-10
 

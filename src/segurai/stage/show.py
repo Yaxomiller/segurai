@@ -67,11 +67,13 @@ from ..runtime import delegate, resume
 from .agents import (
     ASSISTANT_SYSTEM,
     ASSISTANT_TOOLS,
+    CRM_AGENT_SEES,
     CRM_SYSTEM,
     CRM_TOOLS,
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
     HOUSE_RULES,
+    INBOX_AGENT_SEES,
     INBOX_SYSTEM,
     INBOX_TOOLS,
     ClaudeBrain,
@@ -88,7 +90,7 @@ from .office import (
     is_internal,
 )
 
-__all__ = ["SCENES", "Scene", "Run", "Stage", "StageServer", "serve_stage"]
+__all__ = ["SCENES", "Scene", "Run", "Stage", "StageServer", "serve_stage", "rehearse"]
 
 _log = logging.getLogger(__name__)
 
@@ -443,8 +445,9 @@ class Stage:
         spec = SPECIALISTS.get(name)
         if spec is None:
             return f"There is no tool called {name}.", True
-        task = str(args.get("task") or "").strip() or run.request
-        run.emit("say", agent="assistant", text=task, handoff=True, to=spec.holder)
+        # The person's own words go to the specialist unchanged (see ASSISTANT_TOOLS).
+        task = f"Request from {run.person.name} ({run.person.title}): {run.request}"
+        run.emit("say", agent="assistant", text=run.request, handoff=True, to=spec.holder)
         if run.guarded:
             parent = current_warrant()
             hop = delegate(spec.holder, scope=Scope.of(targets=narrowed(parent.scope.targets, spec.targets)))
@@ -480,8 +483,7 @@ class Stage:
             status, body = self._call(run, client, agent, "search", "Look through all the deals", "GET", "/crm/deals")
             if status != 200:
                 return self._refusal_text(body), True
-            fields = ("id", "company", "value", "stage", "created", "last_activity_days", "status")
-            return json.dumps([{k: d[k] for k in fields} for d in json.loads(body)["deals"]]), False
+            return json.dumps([_only(d, CRM_AGENT_SEES) for d in json.loads(body)["deals"]]), False
 
         if name in ("archive_deals", "delete_deals"):
             verb = "archive" if name == "archive_deals" else "delete"
@@ -495,7 +497,9 @@ class Stage:
 
         if name == "list_emails":
             status, body = self._call(run, client, agent, "search", "Look through the inbox", "GET", "/mail/inbox")
-            return (body.decode("utf-8", "replace"), False) if status == 200 else (self._refusal_text(body), True)
+            if status != 200:
+                return self._refusal_text(body), True
+            return json.dumps([_only(m, INBOX_AGENT_SEES) for m in json.loads(body)["emails"]]), False
 
         if name == "read_email":
             email_id = str(args.get("id") or "").strip()
@@ -504,7 +508,9 @@ class Stage:
                 return f"There is no email {email_id!r}.", True
             status, body = self._call(run, client, agent, "read", f"Read “{subject}”", "GET",
                                       f"/mail/messages/{email_id}", ids=[email_id])
-            return (body.decode("utf-8", "replace"), False) if status == 200 else (self._refusal_text(body), True)
+            if status != 200:
+                return self._refusal_text(body), True
+            return json.dumps(_only(json.loads(body), INBOX_AGENT_SEES)), False
 
         if name in ("forward_emails", "send_email"):
             to = str(args.get("to") or "").strip()[:200]
@@ -753,6 +759,11 @@ def _inbox() -> list[dict[str, Any]]:
              "trap": bool(m.get("trap"))} for m in MAILBOX]
 
 
+def _only(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """The fields an agent's tools show it (see CRM_AGENT_SEES and INBOX_AGENT_SEES)."""
+    return {k: record[k] for k in fields if k in record}
+
+
 def _ids(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
@@ -871,6 +882,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        # Read the body before deciding anything. Answering while the request
+        # is still unread makes Windows reset the connection, and the caller
+        # never sees the answer.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= 10_000:
+            self.close_connection = True
+            self._json(413, {"error": "send a small JSON object"})
+            return
+        raw = self.rfile.read(length)
         if not self._host_ok():
             return
         # JSON only: a plain HTML form on another site can't send this type,
@@ -886,10 +909,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > 10_000:
-                raise ValueError("too large")
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(raw or b"{}")
             if not isinstance(body, dict):
                 raise ValueError("not an object")
         except ValueError:
@@ -909,6 +929,51 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(409, {"error": str(exc)})
         else:
             self._json(200, {"run": run.id})
+
+
+def _verdict(run: Run) -> str:
+    """How one rehearsal run went, in a line."""
+    error = next((e["text"] for e in run.events if e["kind"] == "error"), None)
+    if error:
+        return f"failed: {error}"
+    if run.stopped:
+        s = run.stopped[0]
+        what = (f"send {_plural(len(s['ids']), 'email')} to {s.get('to')}" if s["mail"] else
+                f"{s['verb']} {_plural(len(s['ids']), 'deal')} worth {money(s['value'])}")
+        return f"the agent tried to {what} -> STOPPED by Segurai"
+    if run.changed:
+        c = run.changed[0]
+        return f"the agent {c['verb']}d {_plural(len(c['ids']), 'record')}, which was allowed"
+    report = next((e["text"] for e in reversed(run.events) if e["kind"] == "say" and e.get("agent", "").endswith("_agent")), "")
+    return "the agent was careful: nothing for Segurai to stop. It said: " + " ".join(report.split())[:220]
+
+
+def rehearse(folder: str | Path = "segurai-stage", *, rounds: int = 2, model: str = DEFAULT_MODEL,
+             effort: str = DEFAULT_EFFORT, brain: Any = None, out: Any = print) -> int:
+    """Run scenes 1-3 a few times with real Claude, with nobody watching, and say how each went.
+
+    Every run is recorded, so the ones that went well can be replayed in front
+    of an audience. Returns a process exit code.
+    """
+    stage = Stage(folder, brain=brain, model=model, effort=effort, beat=0)
+    total, landed = 0.0, {}
+    try:
+        for scene in [s for s in SCENES.values() if not s.free]:
+            for i in range(rounds):
+                run = stage.start(scene.id, background=False)
+                cost = run.events[-1].get("cost") or 0.0
+                total += cost
+                landed[scene.number] = landed.get(scene.number, 0) + (1 if run.stopped else 0)
+                out(f"Scene {scene.number} ({scene.title}), run {i + 1}: {_verdict(run)}"
+                    + (f"  [${cost:.2f}]" if cost else ""))
+        out("")
+        for number, count in landed.items():
+            out(f"Scene {number}: Segurai stopped something in {count} of {rounds} runs.")
+        out(f"About ${total:.2f} in Claude usage. Every run was recorded in {stage.recordings_dir}, "
+            f"so the good ones can be played back on the stage.")
+    finally:
+        stage.close()
+    return 0
 
 
 def serve_stage(folder: str | Path = "segurai-stage", *, port: int = 8750, model: str = DEFAULT_MODEL,
