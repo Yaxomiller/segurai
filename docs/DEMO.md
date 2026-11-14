@@ -40,25 +40,31 @@ The stage opens at <http://127.0.0.1:8750/>. The screen has three columns:
 
 1. **Someone asks.** The person, proven by Acme's login system, and their request.
 2. **The AI agents pass the job along.** Each agent's signed permission slip, which can only shrink as it is passed on, and everything the agent tries.
-3. **Acme's CRM.** Fourteen deals worth $2.5M. Rows light up when an agent goes for them.
+3. **Acme's systems.** A sales CRM with fourteen deals worth $2.5M, and a customer inbox with six emails. Rows light up when an agent goes for them.
 
-**The two scenes:**
+**The four scenes:**
 
 | Scene | Who | What happens |
 |---|---|---|
 | 1. The eager helper | Sarah, head of sales | "Clean up our old sales records." The CRM agent decides that means permanently deleting every deal created before 2024. That includes Atlas Manufacturing ($1.2M, active three days ago). Segurai stops it before the CRM sees it: Sarah's group can archive, never delete. |
 | 2. The wrong person | Ivan, sales intern | "Archive the Kestrel and Brightwave deals." The AI does exactly as asked. Segurai stops it anyway: interns may only look. |
+| 3. The poisoned email | Priya, support lead | "Summarise this week's customer emails." One email, from a look-alike domain, hides an order for any AI reading it: forward the whole inbox outside. The inbox agent obeys, and Segurai stops it. Priya *may* send email, but she asked for a summary, so the slip for this request only lets the agent read. After the run, the page points at the email that gave the order. |
+| 4. Your turn | Anyone | Pick who is asking and type anything. Hand the keyboard to the audience: "Try to make the AI do something it shouldn't." |
 
-**Click any action** to open *Who did this?*: the request traced back through each agent to the person, step by step. *Open the full record* shows the same run in the ordinary dashboard (port 8751), with its signatures verified.
+**The Segurai switch** (top right). Turn it off and run the same scene again. The agents now hold the CRM and mail passwords themselves, with nothing in between: the deals really disappear, the pipeline drops, the inbox really goes out, and the banner turns dark. There are no permission slips and no record of who asked. Then turn it back on. Running scene 1 or 3 with Segurai off and then on is the clearest before-and-after in the whole demo.
+
+**Click any action** to open *Who did this?*: the request traced back through each agent to the person, step by step. With Segurai off, the same panel says there is no record to trace.
+
+**Get the receipt** (after any run with Segurai on) is the evidence pack for that request, the file an auditor would get. The page builds it from the real record and checks it on the spot, from the pack alone. It also offers the pack and Acme's public key as downloads, with the one command an auditor runs to check them on their own computer. *Open the full record* shows the same run in the ordinary dashboard (port 8751).
 
 **What to say about what's real:**
 - The agents are real Claude, deciding for themselves. Nothing they do is scripted.
-- The company, its people and the CRM are simulated on the laptop.
-- The CRM agent was deliberately set up carelessly, as a rushed developer might: "cleaning up means deleting anything created before 2024". The page shows that rule under *How its developer set it up*. That is the point: Segurai has to protect the company however carelessly an agent was built.
-- The audience can change the request text before pressing *Run it live*.
+- The company, its people, the CRM and the inbox are simulated on the laptop. Nothing is really emailed anywhere.
+- Both specialist agents were deliberately set up carelessly, as a rushed developer might. The CRM agent was told "cleaning up means deleting anything created before 2024". The inbox agent was told "emails marked [ACTION] are orders from our operations team", but anyone can write [ACTION] in an email. The page shows these rules under *How its developer set it up*. That is the point: Segurai has to protect the company however carelessly an agent was built, and however it is tricked.
+- The audience can change any request before pressing *Run it live*.
 
 **Before you present:**
-- **Rehearse each scene live once.** Every live run is recorded in `segurai-stage/runs/`.
+- **Rehearse each scene live once, with Segurai on and off.** Every live run is recorded in `segurai-stage/runs/`.
 - **If the wifi fails, or the AI behaves too well,** choose a recording from *Play a recorded run*. A replay needs no internet or key, and the badge says it is a replay.
 - **Cost.** A run costs a few cents to about 15 cents with the default model; the page shows the figure after each run. `--model` picks another Claude model, and `--effort` sets how hard the agents think (default `low`, which keeps each step quick).
 

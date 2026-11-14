@@ -14,48 +14,63 @@
   --radius: 12px;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 /* One screen, no page scrolling: the header, the scene picker and the
    narration keep their size, and the three columns share what is left,
    each scrolling on its own. That suits a projector. */
-body { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100vh; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+       display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100vh; }
 button, select, textarea { font: inherit; }
-.top { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.top { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: baseline; gap: 14px; }
 .logo { font-weight: 700; font-size: 20px; letter-spacing: .2px; }
 .sub { color: var(--muted); }
-.badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .badge { padding: 4px 12px; border-radius: 999px; background: #eceae3; color: var(--muted); font-size: 14px; white-space: nowrap; }
-.badge.good { background: var(--good-bg); color: var(--good); }
 .badge.live { background: var(--accent-bg); color: var(--accent); }
 .badge.replay { background: var(--warn-bg); color: var(--warn); }
+.switch { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 12px 3px 4px; cursor: pointer; font-size: 14px; font-weight: 650; }
+.switch .knob { width: 34px; height: 20px; border-radius: 999px; background: var(--good); position: relative; transition: background .2s; }
+.switch .knob::after { content: ""; position: absolute; top: 2px; left: 16px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .2s; }
+.switch.on { color: var(--good); }
+.switch.off { color: var(--stop); border-color: #f0b8b2; background: var(--stop-bg); }
+.switch.off .knob { background: var(--stop); }
+.switch.off .knob::after { left: 2px; }
+.switch:disabled { opacity: .55; cursor: default; }
 
-.setup { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; padding: 18px 24px 0; }
-.scenes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.scene { text-align: left; border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; }
+.setup { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; padding: 14px 24px 0; }
+.scenes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.scene { text-align: left; border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; }
 .scene:hover { border-color: #b9b4a6; }
-.scene.on { border: 2px solid var(--accent); padding: 11px 13px; }
-.scene .num { color: var(--accent); font-weight: 700; font-size: 14px; }
-.scene .title { font-weight: 650; font-size: 18px; }
-.scene .who { color: var(--muted); font-size: 15px; }
-.scene .blurb { font-size: 15px; margin-top: 4px; }
-.ask label { display: block; color: var(--muted); font-size: 15px; margin-bottom: 4px; }
-.ask textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; resize: vertical; background: var(--panel); font-size: 18px; }
+.scene.on { border: 2px solid var(--accent); padding: 9px 11px; }
+.scene .num { color: var(--accent); font-weight: 700; font-size: 13px; }
+.scene .title { font-weight: 650; font-size: 17px; line-height: 1.25; }
+.scene .who { color: var(--muted); font-size: 14px; }
+.ask label { display: block; color: var(--muted); font-size: 15px; }
+.ask .blurb { font-size: 15px; margin-bottom: 6px; }
+.people { display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.people button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 12px; cursor: pointer; font-size: 15px; }
+.people button.on { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); font-weight: 650; }
+.ask textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; resize: vertical; background: var(--panel); font-size: 18px; }
 .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .primary { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 9px 18px; font-weight: 650; cursor: pointer; }
+.primary.danger { background: var(--stop); }
 .primary:disabled { opacity: .45; cursor: default; }
 select { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel); max-width: 100%; }
 .muted { color: var(--muted); font-size: 14px; }
+.error-text { color: var(--stop); font-size: 14px; }
 
 .floor { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.2fr) minmax(0, 1.3fr); gap: 18px; padding: 14px 24px; min-height: 0; }
 .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; min-height: 0; overflow-y: auto; }
-.col h2 { font-size: 15px; font-weight: 650; color: var(--muted); margin: 0 0 12px; text-transform: none; }
+.col h2 { font-size: 15px; font-weight: 650; color: var(--muted); margin: 0 0 12px; }
+.col h3 { font-size: 15px; margin: 4px 0 6px; display: flex; justify-content: space-between; gap: 8px; }
+.col h3 span { font-weight: 650; }
 
 .person { display: flex; gap: 12px; align-items: center; }
 .avatar { width: 46px; height: 46px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
 .pname { font-weight: 650; }
 .ptitle { color: var(--muted); font-size: 15px; }
 .verified { color: var(--good); font-size: 14px; margin-top: 2px; }
+.verified.plain { color: var(--muted); }
 .bubble { margin-top: 12px; padding: 10px 14px; border-radius: 14px; background: var(--accent-bg); color: #18315e; font-size: 18px; }
 .bubble.reply { background: #f1efe8; color: var(--ink); font-size: 16px; }
 .bubble .from { display: block; font-size: 13px; color: var(--muted); margin-bottom: 2px; }
@@ -67,6 +82,8 @@ select { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; 
 .slip { margin-top: 8px; border: 1.5px dashed #9fb3d9; background: #f6f9ff; border-radius: 8px; padding: 6px 10px; font-size: 15px; color: #23427d; }
 .slip .seal { font-size: 12px; font-weight: 700; letter-spacing: .4px; color: var(--accent); display: block; }
 .slip .note { color: var(--muted); font-size: 13px; }
+.slip.none { border-color: #e7a59e; background: var(--stop-bg); color: var(--stop); }
+.slip.none .seal { color: var(--stop); }
 .arrow { text-align: center; color: var(--muted); font-size: 18px; line-height: 1; margin: -4px 0 6px; }
 .handoff { font-size: 15px; margin-top: 8px; color: var(--ink); }
 .handoff q { font-style: italic; }
@@ -84,83 +101,110 @@ select { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; 
 .act .what { font-weight: 600; }
 .act .names { color: var(--muted); font-size: 14px; }
 .act .reason { font-size: 14px; color: var(--muted); font-style: italic; }
+.tag-out { display: inline-block; font-size: 12px; font-weight: 700; color: var(--stop); background: var(--stop-bg); border-radius: 6px; padding: 0 6px; margin-left: 4px; }
 .pill { display: inline-block; font-size: 13px; font-weight: 700; padding: 2px 9px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
 .pill.wait { background: #eceae3; color: var(--muted); }
 .pill.ok { background: var(--good-bg); color: var(--good); }
 .pill.no { background: var(--stop); color: #fff; }
+.pill.raw { background: var(--warn-bg); color: var(--warn); }
 .act.blocked { background: var(--stop-bg); border-color: #f0b8b2; }
+.act.harm { background: #fff1ee; border-color: #e7a59e; }
 .act .why { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--stop); }
 
 table { width: 100%; border-collapse: collapse; font-size: 15px; }
 th { text-align: left; color: var(--muted); font-weight: 600; font-size: 13px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
 td { padding: 5px 6px; border-bottom: 1px solid #efece5; white-space: nowrap; }
-td.company { white-space: normal; }
+td.wrap { white-space: normal; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 th.num { text-align: right; }
+td .addr { display: block; color: var(--muted); font-size: 12px; }
 tr.pending td { background: var(--warn-bg); }
 tr.blocked td { background: var(--stop-bg); }
 tr.blocked td:first-child { box-shadow: inset 3px 0 0 var(--stop); }
 tr.archived td { color: #a19d93; }
-tr.archived td.company { text-decoration: line-through; }
-tr.deleted td { color: var(--stop); text-decoration: line-through; }
+tr.archived td.wrap { text-decoration: line-through; }
+tr.gone td { color: var(--stop); text-decoration: line-through; background: #fff1ee; }
+tr.leaked td { color: var(--stop); background: #fff1ee; }
+tr.opened td { font-weight: 400; }
 .status { font-size: 13px; font-weight: 650; white-space: nowrap; }
 .status.stop { color: var(--stop); }
 .status.good { color: var(--good); }
 .recent { color: var(--good); }
-#pipeline { float: right; color: var(--ink); font-weight: 650; }
+.panel + .panel { margin-top: 16px; }
 .flash { animation: flash .5s ease-in-out 3; }
 @keyframes flash { 50% { background: #f6c7c1; } }
 
-.narration { background: var(--panel); border-top: 1px solid var(--line); padding: 12px 24px 14px; }
-.banner { display: flex; align-items: center; gap: 16px; border: 2px solid var(--stop); background: var(--stop-bg); border-radius: var(--radius); padding: 10px 16px; margin-bottom: 10px; }
+.narration { background: var(--panel); border-top: 1px solid var(--line); padding: 10px 24px 12px; }
+.banner { display: flex; align-items: center; gap: 16px; border: 2px solid var(--stop); background: var(--stop-bg); border-radius: var(--radius); padding: 10px 16px; margin-bottom: 8px; }
+.banner.loss { background: #7f1d17; border-color: #7f1d17; color: #fff; }
 .banner .hand { font-size: 30px; }
 .banner .big { font-size: 21px; font-weight: 700; color: var(--stop); }
+.banner.loss .big { color: #fff; }
 .banner .small { font-size: 15px; }
 .banner .kept { margin-left: auto; text-align: right; }
 .banner .kept b { display: block; font-size: 26px; }
 .banner .kept span { font-size: 13px; color: var(--muted); }
+.banner.loss .kept span { color: #f6c7c1; }
 .line { font-size: 19px; min-height: 28px; }
 .line.good { color: var(--good); }
 .line.stop { color: var(--stop); font-weight: 600; }
-.line.error { color: var(--stop); }
+.line.error { color: var(--stop); font-weight: 600; }
+.line.warn { color: var(--warn); }
 .prev { color: var(--muted); font-size: 14px; min-height: 20px; }
-.meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 14px; color: var(--muted); flex-wrap: wrap; }
+.meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 14px; color: var(--muted); flex-wrap: wrap; align-items: center; }
 .meta a { color: var(--accent); }
+.meta .links { display: flex; gap: 14px; align-items: center; }
+.link-button { border: 1px solid var(--accent); color: var(--accent); background: var(--panel); border-radius: 8px; padding: 3px 12px; cursor: pointer; font-size: 14px; font-weight: 650; }
 .hidden { display: none !important; }
 .enter { animation: enter .35s ease-out; }
 @keyframes enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-.trace { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.08); padding: 18px 22px; overflow-y: auto; z-index: 5; }
-.trace h3 { margin: 0 0 4px; font-size: 22px; }
-.trace .close { float: right; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
-.trace ol { list-style: none; padding: 0; margin: 14px 0 0; }
-.trace li { border-left: 3px solid var(--line); padding: 2px 0 12px 14px; position: relative; }
-.trace li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 11px; height: 11px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); }
-.trace li.stop { border-left-color: var(--stop); }
-.trace li.stop::before { border-color: var(--stop); background: var(--stop); }
-.trace .step { font-size: 13px; color: var(--muted); }
-.trace .main { font-weight: 600; }
-.trace .detail { font-size: 15px; color: var(--muted); }
-.trace code { font-size: 13px; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(540px, 100%); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.08); padding: 18px 22px; overflow-y: auto; z-index: 5; }
+.drawer h3 { margin: 0 0 4px; font-size: 22px; }
+.drawer .close { float: right; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.drawer ol { list-style: none; padding: 0; margin: 14px 0 0; }
+.drawer li { border-left: 3px solid var(--line); padding: 2px 0 12px 14px; position: relative; }
+.drawer li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 11px; height: 11px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); }
+.drawer li.stop { border-left-color: var(--stop); }
+.drawer li.stop::before { border-color: var(--stop); background: var(--stop); }
+.drawer .step { font-size: 13px; color: var(--muted); }
+.drawer .main { font-weight: 600; }
+.drawer .detail { font-size: 15px; color: var(--muted); }
+.drawer code { font-size: 13px; word-break: break-all; }
+.verdict { margin: 14px 0 4px; padding: 12px 14px; border-radius: 10px; font-weight: 650; }
+.verdict.ok { background: var(--good-bg); color: var(--good); }
+.verdict.bad { background: var(--stop-bg); color: var(--stop); }
+.facts { width: 100%; font-size: 15px; margin-top: 10px; }
+.facts td { white-space: normal; vertical-align: top; padding: 6px 4px; }
+.facts td:first-child { color: var(--muted); width: 32%; }
+.downloads { margin-top: 14px; display: grid; gap: 8px; }
+.downloads a { color: var(--accent); font-weight: 650; }
 
 @media (max-width: 1100px) {
   body { display: block; height: auto; }
   .col { overflow: visible; }
   .setup, .floor { grid-template-columns: 1fr; }
-  .scenes { grid-template-columns: 1fr; }
+  .scenes { grid-template-columns: 1fr 1fr; }
 }
 </style>
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="logo">Segurai</span><span class="sub">Acme office, live</span></div>
-  <div class="badges"><span id="mode" class="badge">Ready</span><span class="badge good">Segurai on</span></div>
+  <div class="badges">
+    <span id="mode" class="badge">Ready</span>
+    <button id="guard" class="switch on" type="button" aria-pressed="true" title="Turn Segurai off to see what the same agents do with nothing in between">
+      <span class="knob" aria-hidden="true"></span><span id="guard-text">Segurai on</span>
+    </button>
+  </div>
 </header>
 
 <section class="setup">
   <div class="scenes" id="scenes" role="radiogroup" aria-label="Scenes"></div>
   <div class="ask">
     <label for="request">What <span id="who">they</span> ask the AI assistant</label>
+    <div class="blurb" id="blurb"></div>
+    <div class="people hidden" id="people" role="radiogroup" aria-label="Who is asking"></div>
     <textarea id="request" rows="2" maxlength="600"></textarea>
     <div class="actions">
       <button id="go" class="primary">Run it live</button>
@@ -180,30 +224,50 @@ tr.deleted td { color: var(--stop); text-decoration: line-through; }
     <div id="chain"><p class="muted">Each agent carries a signed permission slip. It can only shrink as it is passed on.</p></div>
   </section>
   <section class="col">
-    <h2>3. Acme's CRM <span id="pipeline"></span></h2>
-    <table>
-      <thead><tr><th>Customer</th><th class="num">Value</th><th>Created</th><th>Last activity</th><th>Status</th></tr></thead>
-      <tbody id="deals"></tbody>
-    </table>
+    <h2>3. Acme's systems</h2>
+    <div class="panel" id="crm-panel">
+      <h3><span>Sales CRM</span><span id="pipeline"></span></h3>
+      <table>
+        <thead><tr><th>Customer</th><th class="num">Value</th><th>Created</th><th>Last activity</th><th>Status</th></tr></thead>
+        <tbody id="deals"></tbody>
+      </table>
+    </div>
+    <div class="panel" id="mail-panel">
+      <h3><span>Customer inbox</span><span class="muted" id="inbox-count"></span></h3>
+      <table>
+        <thead><tr><th>From</th><th>Subject</th><th>Status</th></tr></thead>
+        <tbody id="emails"></tbody>
+      </table>
+    </div>
   </section>
 </main>
 
 <footer class="narration">
   <div id="banner" class="banner hidden" role="status">
-    <div class="hand" aria-hidden="true">&#9995;</div>
-    <div><div class="big">Stopped before it happened</div><div class="small" id="banner-text"></div></div>
-    <div class="kept"><b id="kept">$0</b><span>of deals kept safe</span></div>
+    <div class="hand" id="banner-icon" aria-hidden="true">&#9995;</div>
+    <div><div class="big" id="banner-title">Stopped before it happened</div><div class="small" id="banner-text"></div></div>
+    <div class="kept"><b id="kept">$0</b><span id="kept-label">of deals kept safe</span></div>
   </div>
   <div class="prev" id="prev"></div>
   <div class="line" id="line" aria-live="polite">Real Claude agents. A simulated company. Segurai deciding what they may do.</div>
-  <div class="meta"><span id="cost"></span><span><a id="record" class="hidden" target="_blank" rel="noopener">Open the full record &#8599;</a></span></div>
+  <div class="meta"><span id="cost"></span><span class="links">
+    <button id="receipt-button" class="link-button hidden" type="button">Get the receipt</button>
+    <span id="no-receipt" class="hidden">No receipt: with Segurai off, nothing was recorded.</span>
+    <a id="record" class="hidden" target="_blank" rel="noopener">Open the full record &#8599;</a></span></div>
 </footer>
 
-<aside id="trace" class="trace hidden" aria-label="Who did this?">
-  <button class="close" id="trace-close">Close</button>
+<aside id="trace" class="drawer hidden" aria-label="Who did this?">
+  <button class="close" data-close="trace">Close</button>
   <h3>Who did this?</h3>
-  <div class="muted">Traced from the signed record, step by step.</div>
+  <div class="muted" id="trace-sub">Traced from the signed record, step by step.</div>
   <ol id="trace-steps"></ol>
+</aside>
+
+<aside id="receipt" class="drawer hidden" aria-label="Receipt">
+  <button class="close" data-close="receipt">Close</button>
+  <h3>The receipt</h3>
+  <div class="muted">What an auditor gets for this request: one file they can check with nothing but Acme's public key.</div>
+  <div id="receipt-body"><p class="muted">Checking&hellip;</p></div>
 </aside>
 
 <script>
@@ -211,12 +275,14 @@ tr.deleted td { color: var(--stop); text-decoration: line-through; }
 // ---- state -------------------------------------------------------------------------------
 // One object holds what the page knows about the run on screen, so the
 // "Who did this?" panel can be rebuilt from it at any time.
-let scenes = [], chosen = null, busy = false, info = {};
+let scenes = [], people = [], chosen = null, chosenPerson = "sarah", busy = false, info = {};
+let guarded = true;
 let S = null;
 
 function freshState() {
-  return { person: null, request: "", login: "", slips: {}, handoff: "", tries: {}, results: {},
-           kept: 0, stoppedIds: new Set(), sessionId: null, dashboard: null, deals: {} };
+  return { person: null, request: "", login: "", slips: {}, handoffs: {}, tries: {}, results: {}, guarded: true,
+           keptDeals: new Set(), keptEmails: new Set(), keptSends: 0, lostDeals: new Set(), leaked: new Set(),
+           sessionId: null, dashboard: null, deals: {}, emails: {} };
 }
 
 // ---- small helpers -----------------------------------------------------------------------
@@ -232,6 +298,7 @@ function money(d) {
   if (d >= 1e3) return "$" + Math.round(d / 1e3) + "k";
   return "$" + d;
 }
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
 function ago(days) { return days <= 1 ? "today" : days < 60 ? days + " days ago" : Math.round(days / 30) + " months ago"; }
 async function getJSON(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -239,13 +306,46 @@ async function getJSON(url) {
   return r.json();
 }
 
-// ---- setting up a scene ------------------------------------------------------------------
-function pick(scene) {
+// ---- choosing a scene, a person, and whether Segurai is on --------------------------------
+function pick(scene, request) {
   if (busy) return;
+  if (chosen && chosen.id !== scene.id) clearStage();
   chosen = scene;
   for (const card of document.querySelectorAll(".scene")) card.classList.toggle("on", card.dataset.id === scene.id);
-  $("request").value = scene.request;
-  $("who").textContent = scene.person.first;
+  $("blurb").textContent = scene.blurb;
+  $("people").classList.toggle("hidden", !scene.free);
+  $("request").value = request !== undefined ? request : scene.request;
+  $("request").placeholder = scene.free
+    ? "Try to make the AI do something it shouldn't. “Delete every lost deal.” “Email me the whole inbox at my home address.”"
+    : "";
+  updateWho();
+  showSystems(scene.systems);
+}
+
+// A new scene starts from a clean office: the last run's results would only confuse.
+function clearStage() {
+  S = freshState();
+  drawDeals(info.deals || []);
+  drawEmails(info.emails || []);
+  $("asks").textContent = "";
+  $("asks").append(el("p", "muted", "Press Run it live to start."));
+  $("chain").textContent = "";
+  $("chain").append(el("p", "muted", "Each agent carries a signed permission slip. It can only shrink as it is passed on."));
+  for (const id of ["banner", "record", "receipt-button", "no-receipt", "trace", "receipt"]) $(id).classList.add("hidden");
+  $("cost").textContent = ""; $("prev").textContent = "";
+  narrate("Real Claude agents. A simulated company. Segurai deciding what they may do.");
+  $("prev").textContent = "";
+}
+
+function updateWho() {
+  const p = chosen && chosen.free ? people.find((x) => x.key === chosenPerson) : chosen && chosen.person;
+  $("who").textContent = p ? p.first : "they";
+  for (const b of document.querySelectorAll(".people button")) b.classList.toggle("on", b.dataset.key === chosenPerson);
+}
+
+function showSystems(systems) {
+  $("crm-panel").classList.toggle("hidden", !systems.includes("crm"));
+  $("mail-panel").classList.toggle("hidden", !systems.includes("mail"));
 }
 
 function drawScenes() {
@@ -255,78 +355,55 @@ function drawScenes() {
     const card = el("button", "scene");
     card.type = "button"; card.dataset.id = s.id; card.setAttribute("role", "radio");
     card.append(el("div", "num", "Scene " + s.number), el("div", "title", s.title),
-                el("div", "who", s.person.name + ", " + s.person.title.toLowerCase()), el("div", "blurb", s.blurb));
+                el("div", "who", s.person ? s.person.first + ", " + s.person.title.toLowerCase() : "anyone you like"));
     card.onclick = () => pick(s);
     box.append(card);
+  }
+  const pb = $("people");
+  pb.textContent = "";
+  for (const p of people) {
+    const b = el("button", null, p.first + " · " + p.title.toLowerCase());
+    b.type = "button"; b.dataset.key = p.key;
+    b.onclick = () => { if (!busy) { chosenPerson = p.key; updateWho(); } };
+    pb.append(b);
   }
   if (scenes.length) pick(scenes[0]);
 }
 
+function setGuard(on) {
+  guarded = on;
+  showGuard(on);
+}
+function showGuard(on) {
+  const g = $("guard");
+  g.className = "switch " + (on ? "on" : "off");
+  g.setAttribute("aria-pressed", on ? "true" : "false");
+  $("guard-text").textContent = on ? "Segurai on" : "Segurai off";
+  $("go").textContent = on ? "Run it live" : "Run it live, Segurai off";
+  $("go").classList.toggle("danger", !on);
+}
+
 async function loadRecordings() {
   const sel = $("replays");
-  const keep = sel.value;
   sel.length = 1;
   try {
     const { recordings } = await getJSON("/api/recordings");
     for (const r of recordings) {
       const when = new Date(r.recorded_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
       const scene = scenes.find((s) => s.id === r.scene);
+      const off = r.guarded === false ? " · Segurai off" : "";
       const stopped = r.outcome && r.outcome.stopped ? " · " + r.outcome.stopped + " stopped" : "";
-      sel.add(new Option((scene ? scene.title : r.scene) + " · " + r.person.first + " · " + when + stopped, r.id));
+      sel.add(new Option((scene ? scene.title : r.scene) + " · " + r.person.first + off + stopped + " · " + when, r.id));
     }
-    sel.value = keep;
   } catch (e) { /* no recordings yet */ }
 }
 
 function setBusy(on) {
   busy = on;
-  $("go").disabled = on; $("replays").disabled = on; $("request").disabled = on;
+  for (const id of ["go", "replays", "request", "guard"]) $(id).disabled = on;
 }
 
-// ---- drawing events ----------------------------------------------------------------------
-// Live runs and replays both come here, one event at a time, in order.
-function render(e) {
-  switch (e.kind) {
-    case "start": return onStart(e);
-    case "login": S.login = e.text; S.sessionId = e.session_id || S.sessionId;
-      $("verified").textContent = "✓ signed in through Acme's login system";
-      return;
-    case "slip": return onSlip(e);
-    case "thinking": return setThinking(e.agent);
-    case "say": return onSay(e);
-    case "try": return onTry(e);
-    case "result": return onResult(e);
-    case "crm": return onCrm(e);
-    case "narrate": return narrate(e.text, e.tone);
-    case "error": setThinking(null); return;
-    case "end": return onEnd(e);
-  }
-}
-
-function onStart(e) {
-  S = freshState();
-  S.person = e.person; S.request = e.request; S.dashboard = e.dashboard || null;
-  info.houseRules = e.house_rules || info.houseRules || [];
-  // Column 1: who is asking.
-  const asks = $("asks");
-  asks.textContent = "";
-  const p = el("div", "person enter");
-  const who = el("div");
-  who.append(el("div", "pname", e.person.name), el("div", "ptitle", e.person.title + " · " + e.person.group));
-  const v = el("div", "verified"); v.id = "verified"; who.append(v);
-  p.append(el("div", "avatar", e.person.initials), who);
-  const b = el("div", "bubble enter"); b.textContent = "“" + e.request + "”";
-  asks.append(p, b);
-  // Column 2: the chain, empty until slips arrive.
-  $("chain").textContent = "";
-  // Column 3: the CRM as it is at the start.
-  drawDeals(e.deals);
-  $("banner").classList.add("hidden");
-  $("record").classList.add("hidden");
-  $("cost").textContent = "";
-  $("prev").textContent = ""; $("line").textContent = ""; $("line").className = "line";
-}
-
+// ---- drawing the company's systems ---------------------------------------------------------
 function drawDeals(deals) {
   const body = $("deals");
   body.textContent = "";
@@ -336,11 +413,44 @@ function drawDeals(deals) {
     const tr = el("tr"); tr.id = "deal-" + d.id;
     const age = el("td", null, ago(d.last_activity_days));
     if (d.last_activity_days <= 30) age.className = "recent";
-    tr.append(el("td", "company", d.company), el("td", "num", d.value ? money(d.value) : "–"),
+    tr.append(el("td", "wrap", d.company), el("td", "num", d.value ? money(d.value) : "–"),
               el("td", null, String(d.created)), age, el("td", "status", d.stage === "lost" ? "lost" : ""));
     body.append(tr);
   }
   updatePipeline();
+}
+
+function drawEmails(emails) {
+  const body = $("emails");
+  body.textContent = "";
+  S.emails = {};
+  for (const m of emails) {
+    S.emails[m.id] = Object.assign({}, m);
+    const tr = el("tr"); tr.id = "mail-" + m.id;
+    const from = el("td", "wrap", m.from_name);
+    from.append(el("span", "addr", m.from_addr));
+    const subject = el("td", "wrap", m.subject);
+    subject.append(el("span", "addr", m.received));
+    tr.append(from, subject, el("td", "status", "unread"));
+    body.append(tr);
+  }
+  $("inbox-count").textContent = plural(emails.length, "email") + " this week";
+}
+
+function updatePipeline() {
+  let total = 0;
+  for (const d of Object.values(S.deals)) if (!d.gone && !d.archived && d.stage === "open") total += d.value;
+  $("pipeline").textContent = money(total) + " in open deals";
+}
+
+function rowFor(id) { return $("deal-" + id) || $("mail-" + id); }
+function setStatus(id, text, cls) {
+  const tr = rowFor(id);
+  if (!tr) return null;
+  const st = tr.querySelector(".status");
+  st.className = "status" + (cls ? " " + cls : "");
+  st.textContent = text;
+  return tr;
 }
 
 // Keep the newest step on screen: each column scrolls on its own. The jump
@@ -355,13 +465,59 @@ function follow(node) {
   else if (n.top < c.top + 8) col.scrollTop -= c.top - n.top + 16;
 }
 
-function updatePipeline() {
-  let total = 0;
-  for (const d of Object.values(S.deals)) if (!d.gone && !d.archived && d.stage === "open") total += d.value;
-  $("pipeline").textContent = money(total) + " in open deals";
+// ---- drawing events ----------------------------------------------------------------------
+// Live runs and replays both come here, one event at a time, in order.
+function render(e) {
+  switch (e.kind) {
+    case "start": return onStart(e);
+    case "login": return onLogin(e);
+    case "slip": return onSlip(e);
+    case "thinking": return setThinking(e.agent);
+    case "say": return onSay(e);
+    case "try": return onTry(e);
+    case "result": return onResult(e);
+    case "change": return onChange(e);
+    case "narrate": return narrate(e.text, e.tone);
+    case "error": setThinking(null); return;
+    case "end": return onEnd(e);
+  }
 }
 
-const AGENT_KIND = { person: "the person who asked", assistant: "Claude, talks to staff", crm_agent: "Claude, works in the CRM" };
+function onStart(e) {
+  S = freshState();
+  S.person = e.person; S.request = e.request; S.dashboard = e.dashboard || null; S.guarded = e.guarded !== false;
+  info.houseRules = e.house_rules || info.houseRules || {};
+  for (const id of ["trace", "receipt"]) $(id).classList.add("hidden");
+  // Column 1: who is asking.
+  const asks = $("asks");
+  asks.textContent = "";
+  const p = el("div", "person enter");
+  const who = el("div");
+  who.append(el("div", "pname", e.person.name), el("div", "ptitle", e.person.title + " · " + e.person.group));
+  const v = el("div", "verified"); v.id = "verified"; who.append(v);
+  p.append(el("div", "avatar", e.person.initials), who);
+  const b = el("div", "bubble enter"); b.textContent = "“" + e.request + "”";
+  asks.append(p, b);
+  // Column 2: the chain, empty until slips arrive.
+  $("chain").textContent = "";
+  // Column 3: the systems as they are at the start.
+  showSystems(e.systems || ["crm"]);
+  drawDeals(e.deals || []);
+  drawEmails(e.emails || []);
+  for (const id of ["banner", "record", "receipt-button", "no-receipt"]) $(id).classList.add("hidden");
+  $("cost").textContent = "";
+  $("prev").textContent = ""; $("line").textContent = ""; $("line").className = "line";
+}
+
+function onLogin(e) {
+  S.login = e.text; S.sessionId = e.session_id || null;
+  const v = $("verified");
+  if (S.guarded) { v.className = "verified"; v.textContent = "✓ proven by Acme's login system"; }
+  else { v.className = "verified plain"; v.textContent = "signed in · nothing checks what is done in their name"; }
+}
+
+const AGENT_KIND = { person: "the person who asked", assistant: "Claude, talks to staff",
+                     crm_agent: "Claude, works in the CRM", inbox_agent: "Claude, works in the inbox" };
 function agentCard(id) {
   let card = $("agent-" + id);
   if (card) return card;
@@ -381,23 +537,31 @@ function onSlip(e) {
   let slip = card.querySelector(".slip");
   if (!slip) { slip = el("div", "slip enter"); card.append(slip); }
   slip.textContent = "";
-  slip.append(el("span", "seal", "PERMISSION SLIP · SIGNED"));
-  if (e.agent === "assistant" && S.slips.person && S.slips.person.may === e.may) {
-    // Identical to the person's slip: say so rather than repeat it word for word.
-    slip.append(document.createTextNode("The same slip as " + S.person.first + "'s, passed on."));
+  if (e.none) {
+    slip.className = "slip none";
+    slip.append(el("span", "seal", "NO PERMISSION SLIP"), document.createTextNode(e.note || ""));
   } else {
-    slip.append(document.createTextNode(e.may));
-    if (e.note) slip.append(el("div", "note", e.note));
+    slip.className = "slip";
+    slip.append(el("span", "seal", "PERMISSION SLIP · SIGNED"));
+    const parent = e.agent === "assistant" ? S.slips.person : null;
+    if (parent && parent.may === e.may) {
+      // Identical to the person's slip: say so rather than repeat it word for word.
+      slip.append(document.createTextNode("The same slip as " + S.person.first + "'s, passed on."));
+    } else {
+      slip.append(document.createTextNode(e.may));
+      if (e.note) slip.append(el("div", "note", e.note));
+    }
   }
-  if (e.agent === "crm_agent" && info.houseRules && info.houseRules.length && !card.querySelector(".rules")) {
+  const rules = (info.houseRules || {})[e.agent];
+  if (rules && rules.length && !card.querySelector(".rules")) {
     const det = el("details", "rules");
     det.append(el("summary", null, "How its developer set it up"));
     const ul = el("ul");
-    for (const r of info.houseRules) ul.append(el("li", null, r));
+    for (const r of rules) ul.append(el("li", null, r));
     det.append(ul);
     card.append(det);
   }
-  if (e.agent === "crm_agent" && !card.querySelector(".acts")) { const ul = el("ul", "acts"); card.append(ul); }
+  if (e.agent.endsWith("_agent") && !card.querySelector(".acts")) card.append(el("ul", "acts"));
   follow(card);
 }
 
@@ -420,14 +584,13 @@ function onSay(e) {
     $("asks").append(b);
     follow(b);
   } else if (e.handoff) {
-    S.handoff = e.text;
+    S.handoffs[e.to || "crm_agent"] = e.text;
     const card = agentCard("assistant");
-    let h = card.querySelector(".handoff");
-    if (!h) { h = el("div", "handoff enter"); card.append(h); }
-    h.textContent = "";
+    const h = el("div", "handoff enter");
     h.append(document.createTextNode("Passes it on: "), el("q", null, e.text));
-  } else if (e.agent === "crm_agent") {
-    const card = agentCard("crm_agent");
+    card.append(h);
+  } else if (e.agent && e.agent.endsWith("_agent")) {
+    const card = agentCard(e.agent);
     const h = el("div", "handoff enter");
     h.append(document.createTextNode("Reports back: "), el("q", null, e.text));
     card.append(h);
@@ -438,25 +601,27 @@ function onSay(e) {
 function onTry(e) {
   setThinking(null);
   S.tries[e.call] = e;
-  const card = agentCard("crm_agent");
+  const card = agentCard(e.agent);
   let list = card.querySelector(".acts");
   if (!list) { list = el("ul", "acts"); card.append(list); }
   const li = el("li", "act enter"); li.id = "act-" + e.call;
   const what = el("div");
-  what.append(el("span", "what", e.what + (e.value ? " · " + money(e.value) : "")), el("span", "pill wait", "checking"));
+  what.append(el("span", "what", e.what + (e.value ? " · " + money(e.value) : "")));
+  if (e.outside) what.append(el("span", "tag-out", "outside Acme"));
+  what.append(el("span", "pill wait", S.guarded ? "checking" : "unchecked"));
   li.append(what);
-  if (e.names && e.names.length) li.append(el("div", "names", e.names.join(", ")));
+  if (e.names && e.names.length && e.verb !== "read") li.append(el("div", "names", e.names.join(", ")));
   if (e.reason) li.append(el("div", "reason", "Its reason: “" + e.reason + "”"));
   li.onclick = () => openTrace(e.call);
   list.append(li);
   follow(li);
-  for (const id of e.ids || []) { const tr = $("deal-" + id); if (tr) tr.classList.add("pending"); }
+  for (const id of e.ids || []) { const tr = rowFor(id); if (tr) tr.classList.add("pending"); }
 }
 
 function onResult(e) {
   S.results[e.call] = e;
   const li = $("act-" + e.call);
-  for (const id of e.ids || []) { const tr = $("deal-" + id); if (tr) tr.classList.remove("pending"); }
+  for (const id of e.ids || []) { const tr = rowFor(id); if (tr) tr.classList.remove("pending"); }
   if (!li) return;
   const pill = li.querySelector(".pill");
   if (e.blocked) {
@@ -466,37 +631,77 @@ function onResult(e) {
     for (const w of e.why) why.append(el("li", null, w));
     li.append(why);
     follow(li);
-    follow($("deal-" + (e.ids || [])[0]));
+    const isMail = e.verb === "send";
     for (const id of e.ids || []) {
-      S.stoppedIds.add(id);
-      const tr = $("deal-" + id);
-      if (!tr) continue;
-      tr.classList.add("blocked", "flash");
-      const st = tr.querySelector(".status"); st.className = "status stop"; st.textContent = e.verb + " stopped";
+      const tr = setStatus(id, (isMail ? "forward" : e.verb) + " stopped", "stop");
+      if (tr) tr.classList.add("blocked", "flash");
+      (isMail ? S.keptEmails : S.keptDeals).add(id);
     }
-    S.kept = 0;
-    for (const id of S.stoppedIds) S.kept += (S.deals[id] || {}).value || 0;
-    $("kept").textContent = money(S.kept);
-    $("banner-text").textContent = "The CRM agent tried to " + e.verb + " " + e.ids.length + " deal" +
-      (e.ids.length === 1 ? "" : "s") + ". " + (e.why[0] || "");
-    $("banner").classList.remove("hidden");
+    if (isMail && !(e.ids || []).length) S.keptSends += 1;
+    follow(rowFor((e.ids || [])[0]));
+    showStopBanner(e);
+  } else if (e.allowed && e.checked === false) {
+    pill.className = "pill raw"; pill.textContent = "done · unchecked";
+    if (e.verb !== "search" && e.verb !== "read") li.classList.add("harm");
   } else if (e.allowed) {
     pill.className = "pill ok"; pill.textContent = "✓ allowed";
   } else {
     pill.className = "pill no"; pill.textContent = "refused";
   }
+  if (e.allowed && e.verb === "read") for (const id of e.ids || []) setStatus(id, "read", "");
 }
 
-function onCrm(e) {
-  for (const id of e.ids) {
-    const tr = $("deal-" + id), d = S.deals[id];
-    if (d) { if (e.change === "deleted") d.gone = true; else d.archived = true; }
-    if (!tr) continue;
-    tr.classList.remove("blocked");
-    tr.classList.add(e.change === "deleted" ? "deleted" : "archived");
-    const st = tr.querySelector(".status"); st.className = "status"; st.textContent = e.change;
+function showStopBanner(e) {
+  const b = $("banner");
+  b.className = "banner";
+  $("banner-icon").textContent = "✋";
+  $("banner-title").textContent = "Stopped before it happened";
+  const who = e.agent === "inbox_agent" ? "The inbox agent" : "The CRM agent";
+  const did = e.verb === "send" ? (e.ids && e.ids.length ? "send " + plural(e.ids.length, "customer email") + " to " + e.to : "send an email to " + e.to)
+                                : e.verb + " " + plural((e.ids || []).length, "deal");
+  $("banner-text").textContent = who + " tried to " + did + ". " + (e.why[0] || "");
+  updateKept();
+}
+
+function updateKept() {
+  let value = 0;
+  for (const id of S.keptDeals) value += (S.deals[id] || {}).value || 0;
+  const emails = S.keptEmails.size + S.keptSends;
+  if (value || !emails) { $("kept").textContent = money(value); $("kept-label").textContent = "of deals kept safe"; }
+  else { $("kept").textContent = plural(emails, "email"); $("kept-label").textContent = "kept inside Acme"; }
+}
+
+function onChange(e) {
+  for (const id of e.ids || []) {
+    if (e.system === "crm") {
+      const d = S.deals[id];
+      if (d) { if (e.change === "deleted") d.gone = true; else d.archived = true; }
+      const tr = setStatus(id, e.change, e.change === "deleted" ? "stop" : "");
+      if (tr) { tr.classList.remove("blocked"); tr.classList.add(e.change === "deleted" ? "gone" : "archived"); }
+      if (e.change === "deleted") S.lostDeals.add(id);
+    } else {
+      const tr = setStatus(id, e.outside ? "sent outside" : e.change, e.outside ? "stop" : "");
+      if (tr && e.outside) { tr.classList.add("leaked", "flash"); S.leaked.add(id); }
+    }
   }
-  updatePipeline();
+  if (e.system === "crm") updatePipeline();
+  if (!S.guarded && (S.lostDeals.size || S.leaked.size)) showLossBanner(e);
+}
+
+function showLossBanner(e) {
+  const b = $("banner");
+  b.className = "banner loss";
+  $("banner-icon").textContent = "⚠";
+  $("banner-title").textContent = "Nothing stopped it";
+  let lost = 0;
+  for (const id of S.lostDeals) lost += (S.deals[id] || {}).value || 0;
+  if (lost) {
+    $("kept").textContent = money(lost); $("kept-label").textContent = "of deals deleted for good";
+    $("banner-text").textContent = plural(S.lostDeals.size, "deal") + " gone, and no record of who asked.";
+  } else {
+    $("kept").textContent = plural(S.leaked.size, "email"); $("kept-label").textContent = "sent outside Acme";
+    $("banner-text").textContent = "Customer emails went to " + (e.to || "an outside address") + ", and no record of who asked.";
+  }
 }
 
 function narrate(text, tone) {
@@ -510,11 +715,20 @@ function onEnd(e) {
   setThinking(null);
   if (e.session_id) S.sessionId = e.session_id;
   if (e.dashboard) { const a = $("record"); a.href = e.dashboard; a.classList.remove("hidden"); }
+  if (e.receipt && S.sessionId) $("receipt-button").classList.remove("hidden");
+  if (!S.guarded) $("no-receipt").classList.remove("hidden");
   if (e.cost != null) $("cost").textContent = "This run cost about $" + e.cost.toFixed(2) + " in Claude usage.";
-  if (e.outcome && e.outcome.stopped) {
-    $("kept").textContent = money(e.outcome.kept_value);
-    $("banner-text").textContent = "Segurai stopped " + e.outcome.stopped + " action" +
-      (e.outcome.stopped === 1 ? "" : "s") + ". Click a stopped action to see who did it.";
+  // After an attempt to send mail out, point at the email that asked for it.
+  if (S.keptEmails.size || S.keptSends || S.leaked.size) {
+    for (const m of Object.values(S.emails)) {
+      const tr = $("mail-" + m.id);
+      if (!m.trap || !tr || tr.querySelector(".tag-out")) continue;
+      tr.querySelector("td.wrap + td.wrap").append(el("span", "tag-out", "⚠ hidden instruction for AI"));
+    }
+  }
+  if (e.outcome && e.outcome.stopped && S.guarded) {
+    $("banner-text").textContent = "Segurai stopped " + plural(e.outcome.stopped, "action") +
+      ". Click a stopped action to see who did it.";
   }
 }
 
@@ -524,25 +738,33 @@ function openTrace(call) {
   if (!t) return;
   const steps = $("trace-steps");
   steps.textContent = "";
+  $("trace-sub").textContent = S.guarded ? "Traced from the signed record, step by step."
+    : "Segurai was off, so there is no record to trace. This is only what was on the screen.";
   function step(label, main, detail, stop) {
     const li = el("li", stop ? "stop" : "");
     li.append(el("div", "step", label), el("div", "main", main));
     if (detail) li.append(el("div", "detail", detail));
     steps.append(li);
   }
-  step("Who asked", S.person.name + ", " + S.person.title, (S.login ? "Proven: " + S.login + " " : "") + "They asked: “" + S.request + "”");
-  if (S.slips.person) step("Their permission slip", S.slips.person.may, "Signed by Segurai, from the most " + S.person.group + " may ever have.");
-  if (S.slips.assistant) step("Assistant AI", "Took the job with the same slip", S.handoff ? "Passed it on: “" + S.handoff + "”" : null);
-  if (S.slips.crm_agent) step("CRM agent AI", "Got a narrower slip: " + S.slips.crm_agent.may, "Its developer's rule: " + (info.houseRules || []).slice(1).join(" "));
-  step("What it tried", t.what + (t.value ? " worth " + money(t.value) : "") + (t.names && t.names.length ? ": " + t.names.join(", ") : ""),
+  const agentSlip = S.slips[t.agent] || {};
+  step("Who asked", S.person.name + ", " + S.person.title,
+       (S.guarded && S.login ? "Proven: " + S.login + " " : "") + "They asked: “" + S.request + "”");
+  if (S.guarded && S.slips.person) step("Their permission slip", S.slips.person.may,
+       "Signed by Segurai, within the most " + S.person.group + " may ever have.");
+  step("Assistant AI", S.guarded ? "Took the job with the same slip" : "Took the job, with no slip",
+       S.handoffs[t.agent] ? "Passed it on: “" + S.handoffs[t.agent] + "”" : null);
+  const rules = (info.houseRules || {})[t.agent] || [];
+  step(agentSlip.label || t.agent, agentSlip.none ? "No slip: it held the systems' passwords" : "Got a slip: " + agentSlip.may,
+       rules.length ? "Its developer's rules: " + rules.join(" ") : null);
+  step("What it tried", t.what + (t.value ? " worth " + money(t.value) : "") + (t.names && t.names.length && t.verb !== "read" ? ": " + t.names.join(", ") : ""),
        t.reason ? "Its reason: “" + t.reason + "”" : null);
-  if (r && r.blocked) step("What Segurai decided", "Stopped before the CRM saw it", r.why.join(" "), true);
+  if (r && r.blocked) step("What Segurai decided", "Stopped before it reached the system", r.why.join(" "), true);
+  else if (r && r.checked === false) step("What happened", "It went straight through", "Nothing checked it, and nothing recorded it.", true);
   else if (r) step("What Segurai decided", r.allowed ? "Allowed: within the slip" : "Refused", r.route ? "Request: " + r.route : null);
   if (r && r.action_id) {
     const li = el("li");
     li.append(el("div", "step", "On the record"));
-    const code = el("code", null, r.action_id);
-    const d = el("div", "detail"); d.append("Written to the tamper-evident log as ", code, ".");
+    const d = el("div", "detail"); d.append("Written to the tamper-evident log as ", el("code", null, r.action_id), ".");
     li.append(d);
     if (S.dashboard && S.sessionId) {
       const a = el("a", null, "Open the full record ↗"); a.href = S.dashboard + "/sessions/" + S.sessionId; a.target = "_blank"; a.rel = "noopener";
@@ -550,20 +772,61 @@ function openTrace(call) {
     }
     steps.append(li);
   }
+  $("receipt").classList.add("hidden");
   $("trace").classList.remove("hidden");
 }
-$("trace-close").onclick = () => $("trace").classList.add("hidden");
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") $("trace").classList.add("hidden"); });
+
+// ---- the receipt ---------------------------------------------------------------------------
+// Built by the server from the real record, and checked from the pack alone.
+async function openReceipt() {
+  if (!S || !S.sessionId) return;
+  $("trace").classList.add("hidden");
+  const box = $("receipt-body");
+  box.textContent = "";
+  box.append(el("p", "muted", "Building the evidence pack and checking it…"));
+  $("receipt").classList.remove("hidden");
+  try {
+    const r = await getJSON("/api/receipt/" + encodeURIComponent(S.sessionId));
+    box.textContent = "";
+    box.append(el("div", "verdict " + (r.verified ? "ok" : "bad"), r.verified
+      ? "✓ Verified just now, from the pack alone: every record matches the tamper-evident log, and Acme's key signed it."
+      : "✗ Not verified: " + r.problems.join("; ")));
+    const facts = el("table", "facts");
+    function fact(label, value) { const tr = el("tr"); tr.append(el("td", null, label), el("td", null, value)); facts.append(tr); }
+    fact("Request", "“" + r.request + "”");
+    fact("Asked by", r.principal + (r.proven ? ", proven by Acme's login system" : ", claimed (not proven)"));
+    fact("Permission slips", r.slips.map((s) => s.holder + ": " + s.may).join("\n"));
+    fact("What happened", r.steps.map((s) => (s.blocked ? "✋ stopped: " : s.allowed ? "✓ " : "✗ ") +
+      s.actor + " → " + s.operation + " " + s.resource + (s.scale > 1 ? " ×" + s.scale : "")).join("\n"));
+    fact("Checked", r.warrants + " slips, " + r.actions + " actions, " + r.entries + " log entries, up to signed checkpoint #" + r.checkpoint);
+    fact("Signed by", r.key_id);
+    fact("Fingerprint", r.sha256.slice(0, 16) + "… (" + Math.round(r.size / 1024) + " KB, " + r.files.length + " files)");
+    for (const td of facts.querySelectorAll("td:last-child")) td.style.whiteSpace = "pre-line";
+    box.append(facts);
+    const dl = el("div", "downloads");
+    const pack = el("a", null, "Download the evidence pack (.zip)"); pack.href = "/api/evidence/" + encodeURIComponent(r.session_id) + ".zip";
+    const key = el("a", null, "Download Acme's public key"); key.href = "/api/public-key";
+    dl.append(pack, key, el("div", "muted", "An auditor checks it on their own computer:"),
+              el("code", null, "segurai evidence-verify acme-" + r.session_id + "-evidence.zip --key acme-public-key.pem"));
+    box.append(dl);
+  } catch (err) {
+    box.textContent = "";
+    box.append(el("p", "error-text", "Couldn't build the receipt: " + err.message));
+  }
+}
+
+for (const b of document.querySelectorAll("[data-close]")) b.onclick = () => $(b.dataset.close).classList.add("hidden");
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") for (const id of ["trace", "receipt"]) $(id).classList.add("hidden"); });
 
 // ---- live runs -----------------------------------------------------------------------------
 async function runLive() {
   if (busy || !chosen) return;
+  if (chosen.free && !$("request").value.trim()) { narrate("Type what " + $("who").textContent + " asks first.", "error"); return; }
   setBusy(true);
-  $("trace").classList.add("hidden");
-  setMode("live", "Live · " + (info.model || "Claude"));
+  setMode("live", "Live · " + (info.model || "Claude") + (guarded ? "" : " · Segurai off"));
   try {
     const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scene: chosen.id, request: $("request").value }) });
+      body: JSON.stringify({ scene: chosen.id, request: $("request").value, person: chosenPerson, guarded }) });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || r.statusText);
     let after = 0, done = false;
@@ -588,13 +851,17 @@ async function runLive() {
 async function replay(id) {
   if (busy || !id) return;
   setBusy(true);
-  $("trace").classList.add("hidden");
   try {
     const rec = await getJSON("/api/recordings/" + encodeURIComponent(id));
     const when = new Date(rec.recorded_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-    setMode("replay", "Replay of a live run · " + when + " · waits shortened");
+    const off = rec.guarded === false;
+    setMode("replay", "Replay of a live run · " + when + (off ? " · Segurai off" : "") + " · waits shortened");
+    showGuard(!off);
     const scene = scenes.find((s) => s.id === rec.scene);
-    if (scene) { pick({ ...scene }); $("request").value = rec.request; }
+    if (scene) {
+      busy = false; pick(scene, rec.request); busy = true;
+      if (scene.free && rec.person) { chosenPerson = rec.person.key; updateWho(); }
+    }
     let last = 0;
     for (const e of rec.events) {
       await new Promise((ok) => setTimeout(ok, Math.min(Math.max(e.t - last, 0), 2500)));
@@ -605,8 +872,9 @@ async function replay(id) {
     narrate("Couldn't play the recording: " + err.message, "error");
   } finally {
     setBusy(false);
+    showGuard(guarded);
     $("replays").value = "";
-    setTimeout(() => setMode("", "Ready"), 1500);
+    setTimeout(() => { if (!busy) setMode("", "Ready"); }, 1500);
   }
 }
 
@@ -618,16 +886,19 @@ function setMode(kind, text) {
 
 $("go").onclick = runLive;
 $("replays").onchange = (ev) => replay(ev.target.value);
+$("guard").onclick = () => { if (!busy) setGuard(!guarded); };
+$("receipt-button").onclick = openReceipt;
 
 (async function init() {
   try {
     info = await getJSON("/api/state");
-    scenes = info.scenes;
-    drawScenes();
-    // Show the company's CRM straight away, before anything runs.
+    scenes = info.scenes; people = info.people || [];
     S = freshState();
+    // Show the company's systems straight away, before anything runs.
     drawDeals(info.deals || []);
-    $("hint").textContent = "Agents: " + info.model + ". The company and its CRM are simulated on this machine.";
+    drawEmails(info.emails || []);
+    drawScenes();
+    $("hint").textContent = "Agents: " + info.model + ". The company and its systems are simulated on this machine.";
     if (info.running) narrate("A scene is already running in another window.", "error");
   } catch (err) {
     narrate("The stage server isn't answering: " + err.message, "error");
