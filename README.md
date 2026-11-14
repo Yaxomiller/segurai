@@ -432,6 +432,7 @@ Rules are either **deny** or **limit** (a maximum size, or no irreversible actio
 
 ```bash
 segurai demo                  # the sample company, in the browser (demo tamper / demo cover-up)
+segurai stage                 # real Claude agents in a simulated company, live (needs segurai[stage] and an API key)
 segurai init                  # a commented segurai.toml and the organisation's key (--for-docker, --postgres)
 segurai config check          # validate segurai.toml, even while the server runs
 segurai serve                 # run the deployment segurai.toml describes

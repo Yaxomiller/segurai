@@ -114,3 +114,5 @@ jobs:
         run: |
           python -m pip install dist/*.whl
           python -c "import segurai; print('segurai', segurai.__version__)"
+          # The live stage's page is a data file, not code: make sure the package carries it.
+          python -c "from importlib import resources; page = resources.files('segurai.stage').joinpath('page.html').read_text('utf-8'); assert 'Acme office' in page; print('stage page ok')"

@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **The live stage** (`segurai stage`, extra `segurai[stage]`): real Claude agents at work in a simulated company, with Segurai deciding what they may do, on one screen made for people who don't read code.
+  - Two scenes. An eager agent tries to delete $1.7M of live deals, and an obedient agent is asked by an intern who isn't allowed. Both are stopped by the gateway before the CRM sees the request.
+  - A person signs in to a stand-in login system, the issuer grants a slip within their group's ceiling, and each agent hop narrows it. Every CRM request goes through the gateway. Nothing on the Segurai side is simulated.
+  - *Who did this?* traces any action back to the person. Each run also appears in the ordinary dashboard.
+  - Every live run is recorded and can be played back without the internet or an API key, labelled as a replay.
+
 ## [0.4.0] — 2026-11-10
 
 From a library to something a company can deploy: agents can't go around it, the person who asked is proven, and one command runs the whole thing.

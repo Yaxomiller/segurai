@@ -34,7 +34,10 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 #: models this library defaults to are listed; anything else reports tokens
 #: without a dollar figure rather than guessing.
 PRICES = {
+    "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
     "claude-opus-4-8": (5.00, 25.00),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),

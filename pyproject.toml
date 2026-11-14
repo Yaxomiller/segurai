@@ -49,7 +49,9 @@ postgres = ["psycopg[binary]>=3.1"]
 server = ["segurai[collector,identity]"]
 intent = ["anthropic>=1.5"]
 judge = ["anthropic>=1.5"]
-all = ["segurai[otel,langgraph,mcp,openai-agents,claude-agent,collector,identity,postgres,intent,judge]"]
+# The live stage (segurai stage): real Claude agents in a simulated company.
+stage = ["anthropic>=1.5"]
+all = ["segurai[otel,langgraph,mcp,openai-agents,claude-agent,collector,identity,postgres,intent,judge,stage]"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -77,6 +79,7 @@ where = ["src"]
 # py.typed tells type checkers the package ships its own type hints.
 [tool.setuptools.package-data]
 segurai = ["py.typed"]
+"segurai.stage" = ["page.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

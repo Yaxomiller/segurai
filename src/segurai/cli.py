@@ -425,6 +425,19 @@ def cmd_demo(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_stage(args: argparse.Namespace) -> int:
+    """The live stage: two Claude agents at work in a simulated Acme, checked by Segurai.
+
+    Live runs need the Anthropic SDK (segurai[stage]) and an API key; recorded
+    runs play back without either.
+    """
+    from .stage.agents import DEFAULT_EFFORT, DEFAULT_MODEL
+    from .stage.show import serve_stage
+
+    return serve_stage(args.dir, port=args.port, model=args.model or DEFAULT_MODEL,
+                       effort=args.effort or DEFAULT_EFFORT, open_browser=not args.no_browser)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Write a commented segurai.toml and create the organisation's signing key."""
     from .config import example
@@ -868,6 +881,16 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     s.add_argument("--no-serve", action="store_true", help="build the demo database and stop")
     s.set_defaults(func=cmd_demo)
+
+    s = sub.add_parser("stage", help="real Claude agents in a simulated company, live in the browser")
+    s.add_argument("--dir", default="segurai-stage", help="where the stage keeps its records and recordings")
+    s.add_argument("--port", type=int, default=8750,
+                   help="port for the stage (default 8750); the full dashboard uses the next one")
+    s.add_argument("--model", default=None, help="the Claude model the agents run on (default claude-opus-5-5)")
+    s.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"],
+                   help="how hard the agents think (default low, which keeps each step quick)")
+    s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("init", help="write a commented segurai.toml and a signing key")
     s.add_argument("--dir", default=".", help="where to write them (default: here)")

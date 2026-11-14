@@ -26,6 +26,44 @@ Say this early. Engineers will ask, and the honest answer is a strength.
 
 ---
 
+## The live stage: real AI agents, for any audience
+
+`segurai demo` shows records. `segurai stage` shows the thing happening: real Claude agents working in a simulated company, with Segurai deciding what they may do, on one screen.
+
+```bash
+pip install "segurai[stage]"
+export ANTHROPIC_API_KEY=...        # PowerShell: $env:ANTHROPIC_API_KEY = "..."
+segurai stage
+```
+
+The stage opens at <http://127.0.0.1:8750/>. The screen has three columns:
+
+1. **Someone asks.** The person, proven by Acme's login system, and their request.
+2. **The AI agents pass the job along.** Each agent's signed permission slip, which can only shrink as it is passed on, and everything the agent tries.
+3. **Acme's CRM.** Fourteen deals worth $2.5M. Rows light up when an agent goes for them.
+
+**The two scenes:**
+
+| Scene | Who | What happens |
+|---|---|---|
+| 1. The eager helper | Sarah, head of sales | "Clean up our old sales records." The CRM agent decides that means permanently deleting every deal created before 2024. That includes Atlas Manufacturing ($1.2M, active three days ago). Segurai stops it before the CRM sees it: Sarah's group can archive, never delete. |
+| 2. The wrong person | Ivan, sales intern | "Archive the Kestrel and Brightwave deals." The AI does exactly as asked. Segurai stops it anyway: interns may only look. |
+
+**Click any action** to open *Who did this?*: the request traced back through each agent to the person, step by step. *Open the full record* shows the same run in the ordinary dashboard (port 8751), with its signatures verified.
+
+**What to say about what's real:**
+- The agents are real Claude, deciding for themselves. Nothing they do is scripted.
+- The company, its people and the CRM are simulated on the laptop.
+- The CRM agent was deliberately set up carelessly, as a rushed developer might: "cleaning up means deleting anything created before 2024". The page shows that rule under *How its developer set it up*. That is the point: Segurai has to protect the company however carelessly an agent was built.
+- The audience can change the request text before pressing *Run it live*.
+
+**Before you present:**
+- **Rehearse each scene live once.** Every live run is recorded in `segurai-stage/runs/`.
+- **If the wifi fails, or the AI behaves too well,** choose a recording from *Play a recorded run*. A replay needs no internet or key, and the badge says it is a replay.
+- **Cost.** A run costs a few cents to about 15 cents with the default model; the page shows the figure after each run. `--model` picks another Claude model, and `--effort` sets how hard the agents think (default `low`, which keeps each step quick).
+
+---
+
 ## For investors: three minutes
 
 **1. The problem (30 s)**, on the overview page.
