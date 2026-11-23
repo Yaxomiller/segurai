@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-23
+
+Everything the gateway needs to stand in a company's production path: a person can approve what a rule holds, credentials come from the company's own secrets manager, jobs and queues keep the chain, and a request can be stopped at once. Plus governed templates, a baseline learned from the company's own record, and the live stage for people who don't read code.
+
 ### Added
 
 - **Tier 3: the organisation's own record decides what "usual" means** ([`baseline.py`](src/segurai/baseline.py)). `segurai baseline` learns, from clean history only (allowed actions that happened, not observed telemetry), what each agent does with each operation and resource: how often, in how many requests, and the sizes (median, 95th and 99th percentile, largest).
@@ -63,6 +67,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - A held request's new state and its action's record are now written in one transaction. For a moment the dashboard could show a request as sent while its action still read "held" (seen once in CI).
 - The stage server answered some refused requests before reading them, which on Windows could reset the connection before the browser saw the refusal.
+- Stage scene 1: the CRM agent was given each deal's archive status besides the company and year the page says it sees. Every deal starts "active", and Claude read that as "live customers" and stopped. It now sees exactly what the page says, and the scene lands in 3 of 3 rehearsal runs.
+- `segurai stage --rehearse` stops at the first run when the API key is missing or rejected, instead of failing every run, and says how to set it. `--scene N` rehearses one scene.
 
 ## [0.4.0] — 2026-11-10
 

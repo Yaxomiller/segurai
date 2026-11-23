@@ -83,4 +83,4 @@ It then removes everything it created. CI runs both on every push.
 
 ## Prebuilt images
 
-Each release is published as `ghcr.io/yaxomiller/segurai:<version>`, for Linux on Intel and ARM. To use one instead of building, replace `build:` and `image:` in `compose.yaml` with `image: ghcr.io/yaxomiller/segurai:0.4.0`.
+Each release is published as `ghcr.io/yaxomiller/segurai:<version>`, for Linux on Intel and ARM. To use one instead of building, replace `build:` and `image:` in `compose.yaml` with `image: ghcr.io/yaxomiller/segurai:0.5.0`.
