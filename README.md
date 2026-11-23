@@ -404,6 +404,21 @@ with segurai.resume(chain_token, holder="crm_agent"):
     crm.request("DELETE", "/crm/opportunities/4502")          # 403: never reaches the CRM
 ```
 
+## Across queues
+
+Inside a process the current warrant travels by itself, and across HTTP and MCP it rides along with the call. A queue breaks that, because the message is read later by another service. Hand the work over explicitly:
+
+```python
+# producer (an agent)                                   # consumer (another service)
+headers = segurai.queues.handoff(                        headers = segurai.queues.from_sqs(message)
+    "invoice_worker", scope=Scope.of(operations=["read"]),   with segurai.queues.received(
+    seal_to=WORKER_PUBLIC_KEY)                                     headers, holder="invoice_worker",
+sqs.send_message(..., MessageAttributes=                         key=WORKER_PRIVATE_KEY):
+    segurai.queues.sqs_attributes(headers))                  ...   # act, delegate, call the gateway
+```
+
+The message carries the signed chain, which proves who asked, and the worker's key sealed so only that worker can open it. There are helpers for SQS, Kafka and Celery. Work that crossed a queue *without* these headers is still linked when OpenTelemetry span links connect the two sides, shown as inferred and never as evidence.
+
 ## Who asked, proven
 
 An app that starts agent work for a person sends that person's ID token from the company's login system to the issuer:

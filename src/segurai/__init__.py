@@ -35,6 +35,7 @@ Map of the package:
     cli.py           the `segurai` command
 """
 
+from . import queues as queues  # segurai.queues.handoff / received
 from ._version import __version__
 from .actions import ActionSpec, ActionSpecError, arg, count
 from .authority import Authority, ChainError, verify_chain

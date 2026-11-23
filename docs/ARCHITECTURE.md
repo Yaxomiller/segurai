@@ -90,9 +90,18 @@ When work crosses a **process** boundary, the warrant must travel explicitly:
 |---|---|
 | Queue, HTTP call, subprocess | `export_warrant()` → string → `import_warrant()` → `segurai.delegate(..., parent=w)` |
 | MCP tool call | automatically inside the request's `_meta` (see [`instrument/mcp.py`](../src/segurai/instrument/mcp.py)) |
+| Message queue (SQS, Kafka, Celery, anything with headers) | `queues.handoff(consumer, seal_to=...)` delegates a hop for the consumer and returns headers; `queues.received(headers, holder=..., key=...)` takes it up (see [`queues.py`](../src/segurai/queues.py)) |
 | Services with OpenTelemetry | optionally in OpenTelemetry baggage (see [`instrument/otel.py`](../src/segurai/instrument/otel.py)) |
 
 The receiving side always **verifies the signature** before building on a warrant.
+
+**Queues.** A queue message is read later, by another service, so the producer hands the work over explicitly. `handoff` delegates a hop *for the consumer, by name*, narrowed as the producer chooses. The message carries the chain (no key) and, optionally, the hop's private key sealed to the consumer's X25519 public key: an ephemeral key exchange, HKDF-SHA256, then ChaCha20-Poly1305 with the warrant id as associated data. `received` verifies the chain against the organisation's public key, checks the hop names this consumer, opens the key and binds the hop.
+
+- A reader of the queue who isn't that consumer learns who authorized the work, but can't act on it.
+- A sealed key moved onto another message won't open, because it is bound to the warrant id.
+- The hop can't outlive its request. Work that must outlive it should start from a trigger.
+
+That is the *proven* path. Without headers, work across a queue can still be *inferred*: OpenTelemetry span links (how messaging is traced) connect a consumer's observed chain to the producer's, and the dashboard shows that as a probable cause, never as evidence.
 
 ---
 
@@ -419,6 +428,7 @@ src/segurai/
   approvals.py         step-up approvals: held requests, who may decide, deciding, expiry
   credentials.py       the gateway's credentials: Vault, AWS, GCP, env, OAuth2 tokens
   revocation.py        stopping a request, or one warrant, before it expires
+  queues.py            the chain across a queue: handoff, sealed keys, received; SQS/Kafka/Celery
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -486,6 +496,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_queues.py` | a sealed handoff lets only the named worker act (and delegate) under the person's chain; without the key the chain is proven but can't act; wrong worker, swapped key, foreign, plain-keyed or expired messages are refused; SQS/Kafka/Celery shapes round-trip; span links show as inferred, never as proof |
 | `test_step3.py` | triggers fire only for the job they name, with their registered scope, and never for a person; the intent cache saves model calls per person and request; revocation stops a request (or one warrant and what it delegated) at the gateway in either mode, denies what waits for approval, and works from the dashboard and the CLI |
 | `test_credentials.py` | Vault (Kubernetes and AppRole logins, KV v2, dynamic leases, lapsed logins, outages), AWS and GCP secret managers, OAuth2 tokens; a rotated key picked up after a 401; secrets never in errors or records; the fast path carries only what no check could stop and never outlives its warrant |
 | `test_approvals.py` | a held request never reaches the system before a decision; approved, the exact bytes are sent once, even with several runners; the requester can't approve their own; denial, expiry, changed rules; step-up never reaches past the ceiling, a rule or an unproven person; the dashboard's buttons, alerts and evidence packs |
@@ -514,4 +525,5 @@ The whole suite also runs on PostgreSQL (set `SEGURAI_TEST_DATABASE`), and CI do
 - **LangGraph nodes are children of the session, not of each other**, because the graph runner — not the previous node — calls each node. That is accurate, but a supervisor's routing decision is not yet shown as delegation.
 - **Generator functions cannot be agents or tools yet** — the warrant would leak between yields. Clear error if tried.
 - **MCP trust is single-organisation.** A server must hold the same key as the client.
+- **Inferred links are only as good as the span links.** Work that crossed a queue without Segurai's headers is connected only if the messaging library recorded span links, and even then it is a probable cause, not proof.
 - **Observed chains are rebuilt per trace.** An agent run spread over several traces appears as several observed sessions, and a very large trace is re-read each time a batch of it arrives.

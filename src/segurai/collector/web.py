@@ -697,11 +697,24 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
     if isinstance(sess.contract, dict) and sess.contract.get("contract"):
         left += ["<div class='card'><h2>What was asked, as a contract</h2>", _contract_html(sess.contract), "</div>"]
     elif isinstance(sess.contract, dict) and sess.contract.get("observed"):
+        follows = sess.contract.get("follows_from") or []
+        inferred = ""
+        if follows:
+            items = "".join(
+                f"<li><a href='{_link(f['session_id'])}' class='mono'>{_e(f['session_id'])}</a>"
+                + ("" if store.get_session(f["session_id"]) else " <span class='muted small'>(not seen here)</span>")
+                + "</li>" for f in follows)
+            inferred = ("<p class='small' style='margin-top:10px'><span class='chip unk'>inferred</span> "
+                        "Probably started by:</p>"
+                        f"<ul class='plain small'>{items}</ul><p class='muted small'>From OpenTelemetry span "
+                        "links, the usual way queue consumers point at what sent them. Useful for "
+                        "investigating; not evidence, since nothing about the link is signed. Carry the "
+                        "chain in the message (segurai.queues) to make it proof.</p>")
         left.append("<div class='card'><h2>Observed, not authorized</h2><p class='unk'>Rebuilt from "
                     "existing OpenTelemetry spans. No warrants were issued, so actions were recorded "
                     "but not checked, and nothing here is signed.</p><p class='muted small'>This is "
                     "the zero-integration path: point an existing OpenTelemetry exporter at the "
-                    "collector and the agent chain appears, with no code changes.</p></div>")
+                    f"collector and the agent chain appears, with no code changes.</p>{inferred}</div>")
     elif isinstance(sess.contract, dict) and sess.contract.get("issued_under"):
         left.append("<div class='card'><h2>Contract</h2><p class='muted'>None compiled. The issuer "
                     f"granted this scope from the <strong>{_e(sess.contract['issued_under'])}</strong> "

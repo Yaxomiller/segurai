@@ -64,6 +64,8 @@ _SEGURAI_KEYS = ("warrant.id", "warrant.session_id", "warrant.holder", "warrant.
 
 # From plain spans only these attributes are kept: enough to rebuild an
 # observed chain, and nothing else (prompts and responses are not stored).
+#: Where a kept span's links are stored among its attributes.
+_LINKS_KEY = "segurai.links"
 _OBSERVED_KEYS = ("gen_ai.operation.name", "gen_ai.agent.name", "gen_ai.tool.name",
                   "gen_ai.tool.call.id", "gen_ai.tool.call.arguments", "enduser.id", "user.id")
 
@@ -137,6 +139,9 @@ class _Span:
     name: str
     started_at: datetime | None
     attrs: dict[str, Any]
+    #: OpenTelemetry span links: (trace id, span id) of spans in OTHER work
+    #: this span follows from - how a queue consumer points at its producer.
+    links: tuple[tuple[str, str], ...] = ()
 
 
 def _value(v: Mapping[str, Any]) -> Any:
@@ -201,6 +206,8 @@ def _spans(request: Mapping[str, Any]) -> Iterator[_Span]:
                     name=str(span.get("name") or ""),
                     started_at=_time(span.get("startTimeUnixNano")),
                     attrs={a["key"]: _value(a.get("value") or {}) for a in span.get("attributes") or []},
+                    links=tuple((t, s) for link in span.get("links") or []
+                                if (t := _hex_id(link.get("traceId"), 32)) and (s := _hex_id(link.get("spanId"), 16))),
                 )
 
 
@@ -313,8 +320,16 @@ def _rebuild_observed(store: Store, trace_id: str) -> bool:
     principal = next((str(s["attributes"][k]) for s in spans for k in ("enduser.id", "user.id")
                       if s["attributes"].get(k)), "(unknown)")
     top = next((s for s in spans if not s["parent_span_id"] or s["parent_span_id"] not in by_id), spans[0])
-    store.put_session(session_id, principal, f"(observed from OpenTelemetry) {top['name']}",
-                      {"observed": True, "source": "opentelemetry", "trace_id": trace_id}, started)
+    contract: dict[str, Any] = {"observed": True, "source": "opentelemetry", "trace_id": trace_id}
+    # Work that crossed a queue without Segurai's headers can still say where
+    # it came from, through span links. That is a probable cause, not proof:
+    # nothing about it is signed, so it is labelled as inferred, everywhere.
+    links = sorted({(t, s) for span in spans for t, s in span["attributes"].get(_LINKS_KEY) or []
+                    if t != trace_id})
+    if links:
+        contract["follows_from"] = [{"trace_id": t, "span_id": s, "session_id": f"otel_{t}"} for t, s in links]
+        contract["link"] = "inferred from OpenTelemetry span links; not signed, not evidence"
+    store.put_session(session_id, principal, f"(observed from OpenTelemetry) {top['name']}", contract, started)
 
     # Observed warrants grant nothing and are signed by no one: an empty
     # scope, no signature, and key_id "observed" say so to anyone who looks.
@@ -414,9 +429,11 @@ def ingest(store: Store, request: Mapping[str, Any], verifier: Authority | None 
             # Keep every plain span with ids, even ones that are not agents or
             # tools: an LLM or HTTP span may be what links a tool call to the
             # agent above it.
+            kept = {k: span.attrs[k] for k in _OBSERVED_KEYS if k in span.attrs}
+            if span.links:
+                kept[_LINKS_KEY] = [list(link) for link in span.links[:20]]
             store.put_observed_span(span.trace_id, span.span_id, span.parent_span_id, span.name,
-                                    span.started_at or utcnow(),
-                                    {k: span.attrs[k] for k in _OBSERVED_KEYS if k in span.attrs})
+                                    span.started_at or utcnow(), kept)
             touched.add(span.trace_id)
         if span.attrs.get("gen_ai.operation.name") not in ("invoke_agent", "execute_tool"):
             report.ignored += 1

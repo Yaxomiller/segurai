@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **The chain survives a queue** ([`queues.py`](src/segurai/queues.py)). `segurai.queues.handoff("invoice_worker", scope=..., seal_to=WORKER_PUBLIC_KEY)` delegates a hop for the consumer and returns message headers. `with segurai.queues.received(headers, holder="invoice_worker", key=WORKER_PRIVATE_KEY):` takes it up in the other service.
+  - The chain is verified against the organisation's public key, so the consumer, and later an auditor, can prove who asked and through whom.
+  - The hop's private key travels sealed to the consumer's public key (X25519, HKDF-SHA256, ChaCha20-Poly1305, bound to the warrant id). Anyone else who reads the queue sees the chain but can't act on it. A message read after its hop expired is refused.
+  - Helpers for SQS message attributes, Kafka headers and Celery task headers. `consumer_keypair()` makes a consumer service's key pair.
+- **Inferred links across queues.** When work crossed a queue without those headers, standard OpenTelemetry span links still connect the consumer's observed chain to the producer's. The dashboard shows it as *inferred*: a probable cause for investigating, never evidence.
 - **Triggers: jobs nobody types start sessions with a scope registered in advance** (`[[issuer.triggers]]`).
   - A nightly clean-up, a webhook or a queue consumer sends `POST /v1/sessions {"trigger": "...", "request": "..."}` with its own token from its platform (a Kubernetes service account, a CI system, a cloud's workload identity). The token's issuer is trusted with `kind = "workloads"`.
   - The token's subject must match the trigger's `subjects`. The root's scope is the one registered with the trigger, so there is no model call and nothing decided at run time. The session names the trigger's `owner`, the person accountable for the job, beside the job's proven identity.
