@@ -120,6 +120,8 @@ def build_pack(store: Store, session_id: str, authority: Authority, *,
         ("verdict", "SELECT * FROM verdicts WHERE session_id = ?", "action_id"),
         # Held requests: exactly what was asked to be sent, who decided, what happened.
         ("approval", "SELECT * FROM approvals WHERE session_id = ? ORDER BY created_at", "approval_id"),
+        # Direct credentials handed out (never the token, only its hash).
+        ("grant", "SELECT * FROM grants WHERE session_id = ? ORDER BY issued_at", "grant_id"),
     ]
     from .collector.ledger import row_payload
 
@@ -306,7 +308,7 @@ def verify_pack(data: bytes | str | Path, trusted_key: bytes | None = None) -> P
 
     # 3. Each record against its log entry.
     keys = {"session": "session_id", "warrant": "warrant_id", "action": "action_id",
-            "verdict": "action_id", "policy": "version", "approval": "approval_id"}
+            "verdict": "action_id", "policy": "version", "approval": "approval_id", "grant": "grant_id"}
     latest: dict[tuple[str, str], LedgerEntry] = {}
     for e in ledger:
         latest[(e.kind, e.ref_id)] = e

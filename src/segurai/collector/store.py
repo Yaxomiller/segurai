@@ -12,6 +12,7 @@ The tables:
     actions     - one row per thing an agent did, with the admission verdict
     verdicts    - the Tier 2 judge's view of flagged actions
     approvals   - requests the gateway is holding for a person's yes (approvals.py)
+    grants      - short-lived credentials handed to agents for direct use (the fast path)
     ledger      - the tamper-evident hash chain over all of the above
     checkpoints - signed statements of what the chain looked like at a moment
 
@@ -251,6 +252,24 @@ CREATE TABLE IF NOT EXISTS approvals (
 CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state);
 CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id);
 
+-- Short-lived, scope-matched credentials the gateway handed an agent to call a
+-- system directly (gateway.py, the fast path). The token itself is never kept:
+-- only its SHA-256, so the system's own logs can be matched against it.
+CREATE TABLE IF NOT EXISTS grants (
+    grant_id       TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    warrant_id     TEXT NOT NULL,
+    holder         TEXT NOT NULL,
+    upstream       TEXT NOT NULL,
+    operations_json TEXT NOT NULL,
+    provider_scope TEXT NOT NULL,
+    excluded_json  TEXT NOT NULL,
+    issued_at      TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    token_sha256   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grants_session ON grants(session_id);
+
 -- Every version of the organisation's rules that was ever in force (policy.py).
 -- Findings name the version, so an audit can show exactly which rules applied.
 CREATE TABLE IF NOT EXISTS policies (
@@ -270,6 +289,7 @@ _LOGGED_TABLES = {
     "user": ("users", "email"),
     "access": ("access_log", "access_id"),
     "approval": ("approvals", "approval_id"),
+    "grant": ("grants", "grant_id"),
 }
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -1029,6 +1049,16 @@ class Store:
             row.update(changes)
             self._write_row("approvals", row, kind="approval", ref_id=approval_id)
             return row
+
+    # ---- direct grants (the fast path) ------------------------------------------
+
+    def put_grant(self, row: dict[str, Any]) -> None:
+        self._write_row("grants", row, kind="grant", ref_id=row["grant_id"])
+
+    def grants_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        rows = self._read("SELECT * FROM grants WHERE session_id = ? ORDER BY issued_at", (session_id,))
+        return [{**dict(r), "operations": json.loads(r["operations_json"]),
+                 "excluded": json.loads(r["excluded_json"])} for r in rows]
 
     # ---- organisation rules ---------------------------------------------
 

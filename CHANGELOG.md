@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **The gateway gets credentials from the company's secrets manager instead of keeping copies** ([`credentials.py`](src/segurai/credentials.py)).
+  - `[gateway.upstreams.credentials]` fills headers from a secret's fields (`Authorization = "Bearer {api_key}"`), read from HashiCorp Vault (KV or any dynamic secrets engine), AWS Secrets Manager (`segurai[aws]`), GCP Secret Manager, or the environment. Or it exchanges a client secret for a short-lived OAuth2 access token (`type = "oauth2"`).
+  - The gateway proves who it is with the platform's workload identity: a Kubernetes service account token for Vault, the instance or task role on AWS, the metadata server on GCP. With those it holds no long-lived secret at all.
+  - Secrets live only in memory, for their lease, and are fetched again a minute before it lapses. If the secrets manager is down, a credential still inside its lease keeps working; after that, requests fail with 502 and nothing is forwarded. A 401 or 403 from the system drops the cached copy, so a rotated key is picked up on the next request. Secrets never appear in errors or in the record.
+- **The fast path: direct, scope-matched tokens for routine work.** With `[gateway.upstreams.direct]` (and OAuth2 credentials), an agent can ask the gateway (`POST /_segurai/credentials`, or `GatewayClient.direct("crm")`) for a short-lived token scoped to what its warrant allows, and call the system itself.
+  - Only operations no per-request check could stop are included. Anything that can't be undone, anything size-limited by the request, anything under a condition, and anything a company rule covers stays on the gated path. The answer says what was left out and why.
+  - A token may not outlive its warrant: if the provider's tokens last longer than the warrant has left, none is handed out.
+  - Each grant is recorded in the tamper-evident log and the evidence pack, with the token's SHA-256 (never the token), so the system's own logs can be matched against it. The request's dashboard page lists the grants.
 - **Step-up approvals: an action can wait for a person's yes instead of being refused** ([`approvals.py`](src/segurai/approvals.py)).
   - A company rule with `effect = "approve"` holds matching requests at the gateway. It can be limited to actions that can't be undone (`only_irreversible`) and to changes above a size (`above_scale`). It can name who may decide (`approvers`, glob patterns over dashboard emails; empty means any admin). By default the person who asked may not approve their own request (`allow_requester`).
   - With `[gateway] step_up = true`, an action beyond what the request's warrant allows, but within the ceiling the person's session was issued under, is held and the person is asked. A deny rule, a limit rule, anything past the ceiling, an unproven person, or a request no route describes is still refused.

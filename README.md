@@ -391,6 +391,8 @@ Agents are given the gateway's address instead of the CRM's (or the billing syst
 2. is matched to a route that says what it does, for example `DELETE /opportunities/{id}` → *delete one crm.opportunities record, irreversibly*;
 3. is checked against the warrant and the company's rules, recorded before it is sent, and forwarded only if allowed.
 
+The gateway can fetch each system's credential from the company's secrets manager (Vault, AWS Secrets Manager, GCP Secret Manager, or an OAuth2 token endpoint) instead of keeping a copy, proving who it is with the platform's own workload identity. For routine work no rule or limit could stop, it can also hand an agent a short-lived token scoped to exactly those operations (the fast path); everything else still goes through it, one request at a time.
+
 Some actions are fine only if a person agrees. Those are **held** rather than refused: the agent gets a 202 and an approval id, a person approves or denies it on the dashboard's Approvals page, and only then does the gateway send the exact request it was holding, once. See *Company rules* below.
 
 ```python

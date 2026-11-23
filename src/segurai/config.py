@@ -172,6 +172,10 @@ class Config:
             routes = sum(len(u.routes) for u in self.gateway.upstreams)
             lines.append(f"gateway         : http://{self.gateway_address[0]}:{self.gateway_address[1]}/ - "
                          f"{len(self.gateway.upstreams)} upstream(s), {routes} route(s), {self.gateway.mode}")
+            for u in self.gateway.upstreams:
+                where = (u.credentials.describe() if u.credentials is not None
+                         else "environment" if u.headers else "none")
+                lines.append(f"  {u.name:<14}: credentials from {where}")
         lines.append(f"alerts          : {', '.join(c.name for c in self.alert_channels) or 'none'}")
         lines.append(f"witnesses       : {', '.join(w.name for w in self.witnesses) or 'none'}")
         return lines
@@ -298,8 +302,90 @@ def _issuer(t: _Table) -> IssuerConfig:
     return config
 
 
+def _source(t: _Table) -> Any:
+    """A secret source table: where a credential's fields come from."""
+    from .credentials import (
+        AwsSecretsManagerSource,
+        EnvSource,
+        GcpSecretManagerSource,
+        VaultAuth,
+        VaultSource,
+    )
+
+    kind = t.get("type", str)
+    ttl = float(t.get("ttl_seconds", int, 300))
+    if not 10 <= ttl <= 86400:
+        raise ConfigError(f"{t.where}.ttl_seconds must be between 10 and 86400")
+    try:
+        if kind == "env":
+            vt = t.table("vars")
+            if vt is None:
+                raise ConfigError(f"{t.where}: an env source needs [vars], e.g. api_key = \"CRM_API_KEY\"")
+            variables = {name: vt.get(name, str) for name in list(vt.data)}
+            vt.done()
+            source = EnvSource(variables)
+        elif kind == "vault":
+            auth = VaultAuth(method=t.get("auth", str, "kubernetes"), role=t.get("role", str, ""),
+                             mount=t.get("mount", str, ""),
+                             jwt_path=t.get("jwt_path", str, VaultAuth.jwt_path),
+                             token_env=t.get("token_env", str, "VAULT_TOKEN"),
+                             role_id_env=t.get("role_id_env", str, "VAULT_ROLE_ID"),
+                             secret_id_env=t.get("secret_id_env", str, "VAULT_SECRET_ID"))
+            source = VaultSource(t.get("url", str), t.get("path", str), auth, namespace=t.get("namespace", str, ""),
+                                 ttl=ttl)
+        elif kind == "aws-secrets-manager":
+            source = AwsSecretsManagerSource(t.get("secret_id", str), region=t.get("region", str, ""), ttl=ttl)
+        elif kind == "gcp-secret-manager":
+            source = GcpSecretManagerSource(t.get("project", str), t.get("secret", str),
+                                            version=t.get("version", str, "latest"), ttl=ttl)
+        else:
+            raise ConfigError(f"{t.where}.type must be env, vault, aws-secrets-manager or gcp-secret-manager")
+    except ValueError as exc:
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError(f"{t.where}: {exc}") from exc
+    t.done()
+    return source
+
+
+def _credentials(t: _Table) -> Any:
+    """[gateway.upstreams.credentials]: a template over a secret, or an OAuth2 token."""
+    from .credentials import OAuth2Credentials, TemplateCredentials
+
+    kind = t.get("type", str, "secret")
+    st = t.table("source")
+    if st is None:
+        raise ConfigError(f"{t.where}: say where the secret lives with [{t.where.split('[')[0]}.source]")
+    source = _source(st)
+    try:
+        if kind == "secret":
+            ht = t.table("headers")
+            template = {name: ht.get(name, str) for name in list(ht.data)} if ht is not None else {}
+            if ht is not None:
+                ht.done()
+            credentials = TemplateCredentials(source, template)
+        elif kind == "oauth2":
+            credentials = OAuth2Credentials(t.get("token_url", str), t.get("client_id", str), source,
+                                            field=t.get("client_secret_field", str, "client_secret"),
+                                            scope=t.get("scope", str, ""), audience=t.get("audience", str, ""))
+        else:
+            raise ConfigError(f"{t.where}.type must be secret or oauth2")
+    except ValueError as exc:
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError(f"{t.where}: {exc}") from exc
+    t.done()
+    return credentials
+
+
 def _gateway(t: _Table) -> tuple[Any, tuple[str, int]]:
-    from .gateway import GatewayConfig, GatewayConfigError, Route, Upstream
+    from .gateway import (
+        DirectAccess,
+        GatewayConfig,
+        GatewayConfigError,
+        Route,
+        Upstream,
+    )
 
     upstreams = []
     for ut in t.tables("upstreams"):
@@ -329,10 +415,25 @@ def _gateway(t: _Table) -> tuple[Any, tuple[str, int]]:
             except GatewayConfigError as exc:
                 raise ConfigError(f"{rt.where}: {exc}") from exc
             rt.done()
+        ct = ut.table("credentials")
+        credentials = _credentials(ct) if ct is not None else None
+        direct = None
+        dt = ut.table("direct")
+        if dt is not None:
+            st = dt.table("scopes")
+            scopes = {op: st.get(op, str) for op in list(st.data)} if st is not None else {}
+            if st is not None:
+                st.done()
+            dt.done()
+            try:
+                direct = DirectAccess(scopes=scopes)
+            except GatewayConfigError as exc:
+                raise ConfigError(f"{dt.where}: {exc}") from exc
         try:
             upstreams.append(Upstream(name=ut.get("name", str), prefix=ut.get("prefix", str), url=ut.get("url", str),
                                       routes=tuple(routes), headers=headers,
-                                      timeout=float(ut.get("timeout_seconds", (int, float), 30))))
+                                      timeout=float(ut.get("timeout_seconds", (int, float), 30)),
+                                      credentials=credentials, direct=direct))
         except GatewayConfigError as exc:
             raise ConfigError(f"{ut.where}: {exc}") from exc
         ut.done()
@@ -516,6 +617,15 @@ effect = "deny"
 # url = "https://crm.internal.acme.example"
 # [gateway.upstreams.headers_env]
 # Authorization = "CRM_AUTHORIZATION"   # the CRM credential the gateway adds; agents never see it
+# Or fetch it from the company's secrets manager instead of keeping a copy:
+# [gateway.upstreams.credentials]
+# headers = { Authorization = "Bearer {api_key}" }   # {api_key}: a field of the secret
+# [gateway.upstreams.credentials.source]
+# type = "vault"                        # vault | aws-secrets-manager | gcp-secret-manager | env
+# url = "https://vault.internal:8200"
+# path = "secret/data/crm-api"
+# auth = "kubernetes"                   # the gateway's own workload identity; or approle | token
+# role = "segurai-gateway"
 # [[gateway.upstreams.routes]]
 # method = "DELETE"
 # path = "/opportunities/{id}"

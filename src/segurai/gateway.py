@@ -6,9 +6,10 @@ gateway closes that gap by standing in front of the real systems:
 
     agent ──HTTP──> Segurai gateway ──HTTP + real credential──> CRM, billing, ...
 
-  * The gateway holds the upstream credentials (from its environment). Agents
-    never have them, so the only way an agent can reach the CRM is through
-    here. Deployment makes that true at the network level too: the CRM
+  * The gateway holds the upstream credentials - from its environment, or
+    fetched from the company's secrets manager as needed (credentials.py).
+    Agents never have them, so the only way an agent can reach the CRM is
+    through here. Deployment makes that true at the network level too: the CRM
     accepts the gateway's credential, and nothing else can reach it.
   * Every request carries the agent's chain (header ``X-Segurai-Chain``) and a
     proof (``X-Segurai-Proof``): a signature over THIS request - method, path,
@@ -23,6 +24,13 @@ gateway closes that gap by standing in front of the real systems:
     is refused: an action nobody can describe is not one anybody authorized.
   * In enforce mode (the default) a request that breaks anything is refused
     with 403 and never forwarded. In observe mode it is forwarded and flagged.
+  * The fast path (``direct``): for routine operations, an agent may ask
+    ``POST /_segurai/credentials`` for a short-lived token, scope-matched to
+    what its warrant allows, and call the system itself. Only operations no
+    check could stop go in it: nothing irreversible, nothing size-limited,
+    nothing a company rule or a condition covers - those can only be judged
+    one request at a time, here. Each grant is recorded (the token's hash,
+    never the token).
   * A request that only needs a person's approval - an organisation rule
     with effect "approve", or (with ``step_up``) an action beyond the request
     but inside the person's ceiling - is HELD instead: 202, an approval id,
@@ -83,10 +91,11 @@ from .approvals import (
 from .authority import Authority, ChainError, verify_chain
 from .collector.store import Store
 from .context import CHAIN_TOKEN_PREFIX, export_chain, import_chain
-from .models import ActionRecord, Finding, Warrant, utcnow
+from .credentials import CredentialError
+from .models import NON_MUTATING, ActionRecord, Finding, Warrant, utcnow
 from .policy import Policy
 
-__all__ = ["Route", "Upstream", "GatewayConfig", "GatewayServer", "GatewayClient", "ApprovalRunner",
+__all__ = ["Route", "Upstream", "DirectAccess", "GatewayConfig", "GatewayServer", "GatewayClient", "ApprovalRunner",
            "proof_headers", "CHAIN_HEADER", "PROOF_HEADER", "APPROVAL_HEADER", "GatewayConfigError",
            "ApprovalDenied"]
 
@@ -102,6 +111,9 @@ OWN_PREFIX = "/_segurai"
 #: rule) and never "spec" (nobody can approve what nobody can describe).
 _STEP_UP_CHECKS = frozenset({"operation", "target", "scale", "total", "irreversible", "condition"})
 _APPROVAL_PATH = re.compile(r"^/_segurai/approvals/(apr_[0-9a-f]{16})$")
+_CREDENTIALS_PATH = OWN_PREFIX + "/credentials"
+#: A direct token may outlive its warrant by no more than clock slack.
+_CLOCK_SLACK = timedelta(seconds=60)
 
 #: How far a proof's timestamp may be from the gateway's clock, either way.
 PROOF_WINDOW_SECONDS = 60
@@ -198,6 +210,11 @@ class Upstream:
     routes: tuple[Route, ...]
     headers: Mapping[str, str] = field(default_factory=dict)   # injected; the upstream credential
     timeout: float = 30.0
+    #: Fetched from a secrets manager or token endpoint per request, cached
+    #: for its lease (credentials.py). Added after ``headers``.
+    credentials: Any = None
+    #: The fast path: scope-matched tokens agents may use directly.
+    direct: "DirectAccess | None" = None
 
     def __post_init__(self) -> None:
         if not self.prefix.startswith("/") or self.prefix != "/" + self.prefix.strip("/"):
@@ -211,6 +228,30 @@ class Upstream:
             raise GatewayConfigError(f"upstream {self.name}: url must not carry a query or fragment")
         if not self.routes:
             raise GatewayConfigError(f"upstream {self.name}: at least one route is required")
+        if self.direct is not None and not hasattr(self.credentials, "token_for"):
+            raise GatewayConfigError(f"upstream {self.name}: direct access needs oauth2 credentials - only a "
+                                     f"token endpoint can issue a token narrowed to a scope")
+        if self.direct is not None:
+            unknown = sorted(set(self.direct.scopes) - {r.operation for r in self.routes})
+            if unknown:
+                raise GatewayConfigError(f"upstream {self.name}: direct scopes name operations no route "
+                                         f"performs: {unknown}")
+
+
+@dataclass(frozen=True)
+class DirectAccess:
+    """The fast path for one upstream: which provider scope each operation needs.
+
+        [gateway.upstreams.direct]
+        scopes = { read = "crm.read", search = "crm.read" }
+    """
+
+    scopes: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not self.scopes or not all(isinstance(k, str) and k and isinstance(v, str) and v
+                                      for k, v in self.scopes.items()):
+            raise GatewayConfigError("direct access needs scopes: operation = \"provider scope\"")
 
 
 @dataclass(frozen=True)
@@ -375,6 +416,11 @@ def _send_upstream(upstream: Upstream, method: str, rest: str, query_string: str
     target = path + (f"?{query_string}" if query_string else "")
     out = {k: v for k, v in headers if k.lower() not in _DROP_REQUEST_HEADERS}
     out.update(upstream.headers)
+    if upstream.credentials is not None:
+        try:
+            out.update(upstream.credentials.headers())
+        except CredentialError as exc:
+            raise _Refusal(502, f"the gateway could not get its credential for {upstream.name}: {exc}") from exc
     out["Host"] = base.netloc
     if body or method in ("POST", "PUT", "PATCH"):
         out["Content-Length"] = str(len(body))
@@ -386,6 +432,8 @@ def _send_upstream(upstream: Upstream, method: str, rest: str, query_string: str
         payload = response.read(max_response + 1)
         if len(payload) > max_response:
             raise _Refusal(502, "the upstream's answer is larger than the gateway carries")
+        if response.status in (401, 403) and upstream.credentials is not None:
+            upstream.credentials.invalidate()       # rotated or revoked: fetch afresh next time
         return response.status, response.getheaders(), payload
     except (OSError, http.client.HTTPException) as exc:
         raise _Refusal(502, f"the upstream {upstream.name} could not be reached: "
@@ -567,6 +615,37 @@ class GatewayServer(ExclusiveHTTPServer):
             extra.append(step_up_finding(principal, ceiling.name))
         return (needs, extra) if needs else None
 
+    def direct_operations(self, upstream: Upstream, chain: list[Warrant]) -> tuple[list[str], dict[str, str]]:
+        """Which operations a direct token for ``upstream`` may carry: (granted, {excluded: why}).
+
+        An operation goes in only if nothing the gateway checks per request
+        could ever stop one of them - because once the agent holds the token,
+        the gateway sees none of those requests.
+        """
+        leaf = chain[-1]
+        scope = leaf.scope
+        holders = [w.holder for w in chain]
+        granted, excluded = [], {}
+        for operation in sorted((upstream.direct.scopes if upstream.direct else {})):
+            routes = [r for r in upstream.routes if r.operation == operation]
+            resources = sorted({re.sub(r"\{[^}]*\}", "*", r.resource) for r in routes})
+            mutating = operation not in NON_MUTATING
+            rule = next((r for r in self.policy.rules for res in resources
+                         if r.applies(operation, res, leaf.root_principal, holders)), None)
+            if operation not in scope.operations or not all(scope.covers_target(res) for res in resources):
+                excluded[operation] = "not allowed by this request's warrant"
+            elif any(r.irreversible for r in routes):
+                excluded[operation] = "can't be undone, so each one is checked at the gateway"
+            elif mutating and (scope.max_scale is not None or scope.max_total is not None):
+                excluded[operation] = "the request limits how much may change, which only the gateway can count"
+            elif any(c.applies(operation, res) for c in scope.checks for res in resources):
+                excluded[operation] = "a condition must be checked against each request"
+            elif rule is not None:
+                excluded[operation] = f"the company rule {rule.name!r} covers it"
+            else:
+                granted.append(operation)
+        return granted, excluded
+
     def _ceiling_for(self, leaf: Warrant) -> Any:
         session = self.store.get_session(leaf.session_id)
         if session is None or not session.identity or not isinstance(session.contract, dict):
@@ -730,11 +809,15 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         return chain, leaf
 
     def _own(self, method: str, target: str, path: str, body: bytes) -> None:
-        """The gateway's own endpoint: an agent asking what happened to a held request."""
-        _, leaf = self._authenticate(method, target, body)
+        """The gateway's own endpoints: a held request's outcome, and direct credentials."""
+        chain, leaf = self._authenticate(method, target, body)
+        if path == _CREDENTIALS_PATH and method == "POST":
+            self._grant(chain, leaf, body)
+            return
         match = _APPROVAL_PATH.match(path)
         if match is None or method not in ("GET", "HEAD"):
-            raise _Refusal(404, f"the gateway's own paths are GET {OWN_PREFIX}/approvals/<id>")
+            raise _Refusal(404, f"the gateway's own paths are GET {OWN_PREFIX}/approvals/<id> and "
+                                f"POST {_CREDENTIALS_PATH}")
         store = self.server.store
         approval = load(store, match.group(1))
         # Only an agent of the same request may ask: approvals are not a
@@ -745,6 +828,55 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             expire_due(store)
             approval = load(store, approval.approval_id) or approval
         self._reply(200, approval.public(), {APPROVAL_HEADER: approval.approval_id})
+
+    def _grant(self, chain: list[Warrant], leaf: Warrant, body: bytes) -> None:
+        """The fast path: a short-lived token for the routine operations no check could stop."""
+        try:
+            asked = json.loads(body or b"{}", object_pairs_hook=_no_duplicate_keys)
+            name = asked["upstream"] if isinstance(asked, dict) else None
+        except (ValueError, KeyError, UnicodeDecodeError):
+            name = None
+        if not isinstance(name, str):
+            raise _Refusal(400, 'send {"upstream": "<name>"}')
+        upstream = next((u for u in self.server.config.upstreams if u.name == name), None)
+        if upstream is None or upstream.direct is None:
+            raise _Refusal(404, f"{name!r} offers no direct access; send requests through the gateway")
+        granted, excluded = self.server.direct_operations(upstream, chain)
+        if not granted:
+            self._reply(403, {"error": "nothing this request may do can be done directly; send requests "
+                                       "through the gateway", "excluded": excluded})
+            return
+        provider_scope = " ".join(sorted({upstream.direct.scopes[op] for op in granted}))
+        try:
+            token, seconds = upstream.credentials.token_for(provider_scope)
+        except CredentialError as exc:
+            raise _Refusal(502, f"the gateway could not get a token for {name}: {exc}") from exc
+        issued = utcnow()
+        expires = issued + timedelta(seconds=seconds)
+        if expires > leaf.expires_at + _CLOCK_SLACK:
+            # The token can't be called back early, so it may not outlive the
+            # permission it stands for. (It was minted, but nobody gets it.)
+            left = max(0, int((leaf.expires_at - issued).total_seconds() // 60))
+            raise _Refusal(409, f"{name}'s tokens last {int(seconds // 60)} min, longer than this request's "
+                                f"warrant ({left} min left). Shorten token lifetimes at the provider, or "
+                                f"start the request with a longer warrant.")
+        grant_id = f"grt_{uuid.uuid4().hex[:16]}"
+        with self.server.store._tx():
+            self._store_chain(chain)
+            self.server.store.put_grant({
+                "grant_id": grant_id, "session_id": leaf.session_id, "warrant_id": leaf.warrant_id,
+                "holder": leaf.holder, "upstream": name, "operations_json": json.dumps(granted),
+                "provider_scope": provider_scope, "excluded_json": json.dumps(excluded, sort_keys=True),
+                "issued_at": issued.isoformat(), "expires_at": expires.isoformat(),
+                "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            })
+        self._reply(200, {
+            "grant_id": grant_id, "upstream": name, "base_url": upstream.url, "token_type": "Bearer",
+            "access_token": token, "expires_at": expires.isoformat(), "operations": granted,
+            "scope": provider_scope, "excluded": excluded,
+            "note": "Use this token only for the operations listed. Everything else - and anything after it "
+                    "expires - goes through the gateway.",
+        })
 
     def _decide(self, method: str, upstream: Upstream, segments: list[str],
                 query: dict[str, list[str]], body: bytes, chain: list[Warrant],
@@ -903,6 +1035,19 @@ class GatewayClient:
         if status == 202 and held and wait:
             return self.wait(held, timeout=wait)
         return status, out_headers, payload
+
+    def direct(self, upstream: str) -> dict[str, Any]:
+        """Ask for a short-lived token to call ``upstream`` directly (the fast path).
+
+        The answer lists the operations it may be used for, the system's
+        ``base_url``, and what was left out and why. Raises PermissionError
+        when nothing this request may do can be done directly.
+        """
+        status, _, payload = self._send("POST", _CREDENTIALS_PATH, {"upstream": upstream}, None)
+        data = json.loads(payload or b"{}")
+        if status != 200:
+            raise PermissionError(data.get("error") or f"the gateway answered {status}")
+        return data
 
     def status(self, approval_id: str) -> dict[str, Any]:
         """Where a held request stands: its state, and the system's answer once sent."""

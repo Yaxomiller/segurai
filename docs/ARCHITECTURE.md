@@ -345,6 +345,20 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 - The action is checked against the warrant and the company's rules, and recorded before anything is forwarded. A refusal never reaches the system.
 - Paths are parsed strictly. Duplicate JSON keys are refused, method-override headers are dropped, and redirects are not followed.
 
+**Where the gateway's credentials come from** ([`credentials.py`](../src/segurai/credentials.py)).
+
+- From its environment (`headers_env`), or fetched when needed from where the company already keeps them. A *source* reads a secret's fields from HashiCorp Vault (KV or a dynamic secrets engine), AWS Secrets Manager, GCP Secret Manager or the environment. *Credentials* turn it into headers, through a template (`Bearer {api_key}`) or by exchanging a client secret for a short-lived OAuth2 access token.
+- The gateway authenticates to the secrets manager with the platform's workload identity (Kubernetes service account, AWS role, GCP metadata server), so in those setups it holds no long-lived secret. A Vault token or AppRole secret id in the environment also works, and is a long-lived secret.
+- Secrets are kept in memory for their lease and refreshed a minute early. A secrets-manager outage is survived only inside the lease; then requests fail with 502, unforwarded. A 401 or 403 from the system drops the cached credential.
+
+**The fast path** (`[gateway.upstreams.direct]`). For routine operations an agent can ask for a short-lived token and call the system itself.
+
+- The gateway asks the token endpoint for a token narrowed to the provider scopes of the operations it may carry, so the *system* enforces which operations the token allows.
+- An operation is included only if no per-request check could stop it, since the gateway sees none of those calls: it must be in the warrant, not irreversible, not size-limited by the request, under no condition, and covered by no company rule. Everything else stays on the gated path, and the answer says why.
+- A token may not outlive its warrant. It can't be called back early, so if the provider's tokens last longer than the warrant has left, none is handed out.
+- Each grant is recorded (`grants` table, in the log and the evidence pack) with the token's SHA-256, never the token.
+- What the fast path can't do: bound how many records a token's holder touches, or check conditions per record. That is why those operations never go in it.
+
 **Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny, limit and approve rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force.
 
 **Step-up approvals** ([`approvals.py`](../src/segurai/approvals.py)). Some actions are fine only if a person agrees. The gateway holds those instead of refusing them.
@@ -395,6 +409,7 @@ src/segurai/
   report.py            the scope-creep report (M6)
   policy.py            company rules: deny, limit and approve, versioned
   approvals.py         step-up approvals: held requests, who may decide, deciding, expiry
+  credentials.py       the gateway's credentials: Vault, AWS, GCP, env, OAuth2 tokens
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -462,6 +477,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_credentials.py` | Vault (Kubernetes and AppRole logins, KV v2, dynamic leases, lapsed logins, outages), AWS and GCP secret managers, OAuth2 tokens; a rotated key picked up after a 401; secrets never in errors or records; the fast path carries only what no check could stop and never outlives its warrant |
 | `test_approvals.py` | a held request never reaches the system before a decision; approved, the exact bytes are sent once, even with several runners; the requester can't approve their own; denial, expiry, changed rules; step-up never reaches past the ceiling, a rule or an unproven person; the dashboard's buttons, alerts and evidence packs |
 | `test_policy.py`, `test_alerts.py`, `test_witness.py`, `test_evidence.py` | company rules beat grants; alerts are queued once, retried, and sent by exactly one server; witnessed checkpoints catch a key-holder's rewrite; evidence packs verify alone and reveal tampering |
 | `test_accounts.py`, `test_serve.py`, `test_deploy.py` | sign-in, roles, CSRF, throttling and the access log; a whole deployment from one file; configuration mistakes named; ports never shared |
@@ -479,6 +495,7 @@ The whole suite also runs on PostgreSQL (set `SEGURAI_TEST_DATABASE`), and CI do
 - **Code that calls `segurai.session` directly holds the organisation's key.** That's fine for development and the demo. In production, start sessions through the issuer: then agent processes hold only their own hop's key, and can't mint themselves a root.
 - **A witness is only as good as where it writes.** Checkpoints can be published to a file or a webhook, and the audit compares against them. The guarantee depends on the operator making that destination append-only, and on someone checking it. An integration with a public transparency log (such as Sigstore's Rekor) isn't built.
 - **The judge's labels are a model's, not people's.** Both evals have been run live: the compiler meets its target, the judge doesn't yet (47% on ambiguous cases against 85%). Both answer keys were drafted by Claude. The labelling tool is ready, but the human labels haven't been collected.
+- **Direct tokens are bounded by scope and lifetime, not by size.** A fast-path token's holder is checked by the system, per operation, not by the gateway per request. That is why nothing size-limited, irreversible or rule-covered ever goes in one, and why it only works where a system issues scope-narrowed tokens (OAuth2 today).
 - **The gateway speaks HTTP.** Agents that reach systems some other way, such as a database driver, SSH or a vendor SDK with its own transport, need those paths closed or proxied separately. Every API also needs its routes written; a request no route describes is refused.
 - **The report sees one window.** Permissions needed only by rare jobs look unused in a short window; confidence reflects how much activity was seen, not certainty. Identity-provider grants arrive as an exported file, not through live connectors.
 - **The HTTP servers are the standard library's threaded servers**, behind your TLS proxy. That's right for a pilot's traffic, and PostgreSQL lets several run side by side, but nothing has been load-tested at scale.

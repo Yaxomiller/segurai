@@ -46,6 +46,8 @@ crewai = ["crewai>=1.15"]
 collector = ["opentelemetry-proto>=1.30"]
 identity = ["pyjwt[crypto]>=2.8"]
 postgres = ["psycopg[binary]>=3.1"]
+# Credentials from AWS Secrets Manager (credentials.py). Vault and GCP need nothing extra.
+aws = ["boto3>=1.34"]
 server = ["segurai[collector,identity]"]
 intent = ["anthropic>=1.5"]
 judge = ["anthropic>=1.5"]

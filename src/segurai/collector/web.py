@@ -684,6 +684,19 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
                     "written by hand rather than compiled from the request.</p></div>")
     left += ["<div class='card'><h2>Granted scope</h2>",
              _scope_html(root.scope) if root else "<p class='muted'>No root warrant.</p>", "</div>"]
+    grants = store.grants_for_session(session_id)
+    if grants:
+        items = "".join(
+            f"<li><strong>{_e(g['holder'])}</strong> was given a token for "
+            f"<strong>{_e(', '.join(g['operations']))}</strong> on {_e(g['upstream'])} "
+            f"<span class='muted small'>(scope <span class='mono'>{_e(g['provider_scope'])}</span>, until "
+            f"<span class='mono'>{_e(g['expires_at'][:19])}</span>)</span>"
+            + ("".join(f"<div class='muted small'>not {_e(op)}: {_e(why)}</div>" for op, why in g["excluded"].items()))
+            + "</li>" for g in grants)
+        left.append("<div class='card'><h2>Direct access</h2><p class='muted small'>Short-lived tokens the gateway "
+                    "handed out for routine operations, used without passing through it. Only operations no "
+                    "rule or limit could stop are ever included.</p>"
+                    f"<ul class='plain'>{items}</ul></div>")
     left += ["<div class='card'><h2>Verification</h2>",
              _verification_html(store, warrants, verifier) if warrants else "<p class='muted'>No warrants.</p>",
              "</div>"]
