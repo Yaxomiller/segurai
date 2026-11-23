@@ -118,6 +118,8 @@ def build_pack(store: Store, session_id: str, authority: Authority, *,
         ("warrant", "SELECT * FROM warrants WHERE session_id = ? ORDER BY depth, issued_at", "warrant_id"),
         ("action", "SELECT * FROM actions WHERE session_id = ? ORDER BY at, rowid", "action_id"),
         ("verdict", "SELECT * FROM verdicts WHERE session_id = ?", "action_id"),
+        # Held requests: exactly what was asked to be sent, who decided, what happened.
+        ("approval", "SELECT * FROM approvals WHERE session_id = ? ORDER BY created_at", "approval_id"),
     ]
     from .collector.ledger import row_payload
 
@@ -128,7 +130,7 @@ def build_pack(store: Store, session_id: str, authority: Authority, *,
     # The rule versions any finding in this request names.
     versions = sorted({f["clause"].split(":")[0].removeprefix("policy ").strip()
                        for a in records["action"] for f in json.loads(a.get("findings_json") or "[]")
-                       if f.get("check") == "policy" and f.get("clause", "").startswith("policy ")})
+                       if f.get("check") in ("policy", "approval") and f.get("clause", "").startswith("policy ")})
     records["policy"] = [row_payload(dict(r)) for v in versions
                          for r in store._read("SELECT * FROM policies WHERE version = ?", (v,))]
     refs += [("policy", r["version"]) for r in records["policy"]]
@@ -304,7 +306,7 @@ def verify_pack(data: bytes | str | Path, trusted_key: bytes | None = None) -> P
 
     # 3. Each record against its log entry.
     keys = {"session": "session_id", "warrant": "warrant_id", "action": "action_id",
-            "verdict": "action_id", "policy": "version"}
+            "verdict": "action_id", "policy": "version", "approval": "approval_id"}
     latest: dict[tuple[str, str], LedgerEntry] = {}
     for e in ledger:
         latest[(e.kind, e.ref_id)] = e

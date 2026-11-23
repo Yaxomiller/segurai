@@ -5,6 +5,7 @@ sends a message - to Slack, to any webhook, or by email - when:
 
     violation   an agent did something outside its warrant or the rules, and it went ahead
     blocked     an agent tried, and enforce mode (or the gateway) stopped it
+    approval    the gateway is holding a request until a person approves it
     tamper      the record no longer matches its tamper-evident log
 
 How it works - an "outbox", so nothing is lost and nothing is sent twice:
@@ -52,7 +53,7 @@ __all__ = ["Channel", "SlackChannel", "WebhookChannel", "EmailChannel", "AlertWo
 
 _log = logging.getLogger("segurai.alerts")
 
-EVENTS = ("violation", "blocked", "tamper")
+EVENTS = ("violation", "blocked", "tamper", "approval")
 MAX_ATTEMPTS = 8
 #: How long a server holds an alert it is sending before another may try. Far
 #: longer than any channel's timeout, so a slow send is never doubled.
@@ -95,7 +96,10 @@ def format_action(event: str, record: ActionRecord, principal: str, request: str
                   link: str | None) -> tuple[str, list[str]]:
     """(headline, detail lines) for an action alert, in plain words."""
     noun = "record" if record.scale == 1 else "records"
-    if event == "blocked":
+    if event == "approval":
+        headline = (f"Needs your approval: {record.actor} wants to {record.operation} {record.scale} {noun} "
+                    f"in {record.resource}")
+    elif event == "blocked":
         headline = (f"Stopped: {record.actor} tried to {record.operation} {record.scale} {noun} "
                     f"in {record.resource}")
     else:
@@ -256,17 +260,23 @@ class AlertWorker:
             cursor = position
             if record.allowed:
                 continue
-            event = "blocked" if record.blocked else "violation"
+            held = (record.detail or {}).get("approval") or {}
+            event = "approval" if held.get("state") == "pending" else ("blocked" if record.blocked else "violation")
             channels = self._wanted(event)
             if not channels:
                 continue
             session = self.store.get_session(record.session_id)
             principal = session.principal if session else record.actor
             request = session.request if session else "(request unknown)"
-            headline, lines = format_action(event, record, principal, request, self._link(record.session_id))
+            link = self._link(record.session_id)
+            if event == "approval" and self.public_url:
+                link = f"{self.public_url.rstrip('/')}/approvals/{urllib.parse.quote(str(held.get('id')), safe='')}"
+            headline, lines = format_action(event, record, principal, request, link)
             payload = {"event": event, "action_id": record.action_id, "session_id": record.session_id,
                        "actor": record.actor, "operation": record.operation, "resource": record.resource,
                        "scale": record.scale, "principal": principal}
+            if event == "approval":
+                payload["approval_id"] = held.get("id")
             for channel in channels:
                 queued += self.store.queue_alert(event, record.action_id, channel.name,
                                                  {"headline": headline, "lines": lines, "payload": payload})

@@ -191,9 +191,13 @@ def test_a_whole_deployment_from_one_file(tmp_path, world, monkeypatch):
         assert status == 403 and "operation 'delete' not in scope" in json.loads(body)["error"]
         assert world.crm_seen == [("GET", "/opportunities/7", "Bearer the-crm-credential")]
 
-        # 4. The refusal reaches Slack.
-        deployment.alerts.run_once()
-        assert any("tried to delete 1 record in crm.opportunities" in m["text"] for m in world.slack)
+        # 4. The refusal reaches Slack. The background worker may claim the
+        #    alert first, so wait for the message rather than for this pass.
+        deadline = time.monotonic() + 10
+        while not any("tried to delete 1 record in crm.opportunities" in m["text"] for m in world.slack):
+            assert time.monotonic() < deadline, world.slack
+            deployment.alerts.run_once()
+            time.sleep(0.05)
 
         # 5. A checkpoint is witnessed outside the database, and the record matches it.
         deployment.checkpoints.run_once(force=True)

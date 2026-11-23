@@ -4,7 +4,8 @@ One process runs everything a pilot needs, sharing one database:
 
     the dashboard and span ingest      server.port     (collector/server.py)
     the issuer                         POST /v1/sessions on the same port
-    the gateway                        gateway.port    (gateway.py), when configured
+    the gateway                        gateway.port    (gateway.py), when configured,
+                                       with its approval runner (approvals.py)
     the alert worker                   in the background (alerts.py)
     the checkpoint worker              in the background (witness.py)
 
@@ -121,7 +122,8 @@ def build(config: Config, *, any_port: bool = False) -> Deployment:
         from .gateway import GatewayServer
 
         address = (config.gateway_address[0], 0) if any_port else config.gateway_address
-        gateway = GatewayServer(address, config.gateway, store, verifier, policy=config.policy)
+        gateway = GatewayServer(address, config.gateway, store, verifier, policy=config.policy,
+                                ceilings=config.issuer.ceilings if config.issuer else ())
 
     alerts = None
     if config.alert_channels:

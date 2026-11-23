@@ -50,7 +50,8 @@ from .ledger import AuditReport
 from .store import Store
 
 __all__ = ["index_page", "session_page", "audit_page", "permissions_page", "login_page",
-           "users_page", "access_page", "message_page", "CSP", "current_viewer"]
+           "users_page", "access_page", "message_page", "approvals_page", "approval_page", "CSP",
+           "current_viewer"]
 
 #: The signed-in person the page is being drawn for (a WebSession), set by the
 #: server for each request. None when the dashboard runs without accounts.
@@ -180,6 +181,13 @@ form.inline { display:inline; margin:0; }
 .login label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
 .login input { width:100%; }
 .error { color:var(--fail); background:var(--fail-bg); border-radius:8px; padding:8px 12px; margin-bottom:12px; }
+.count { display:inline-block; min-width:18px; text-align:center; font-size:11px; font-weight:700;
+         padding:0 5px; margin-left:4px; border-radius:999px; background:var(--blocked); color:#fff; }
+.held { border-left:4px solid var(--blocked); }
+.held pre { white-space:pre-wrap; word-break:break-word; max-height:320px; overflow:auto; }
+.decide { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
+.decide input[name=note] { flex:1; min-width:220px; }
+button.deny { border-color:var(--fail); color:var(--fail); }
 """
 
 
@@ -241,7 +249,12 @@ def _page(title: str, body: str, *, store: Store | None = None, verifier: Author
                       "log. The company, people and requests are made up, and the compiled contracts "
                       "and AI reviews are pre-written samples, labelled wherever they appear.</div>")
     viewer = current_viewer.get()
-    items = [("overview", "/", "Overview", "viewer"), ("permissions", "/permissions", "Permissions", "viewer"),
+    waiting = ""
+    if store is not None:
+        pending = len(store.approvals(states=("pending",), limit=100))
+        waiting = f"<span class='count'>{pending}</span>" if pending else ""
+    items = [("overview", "/", "Overview", "viewer"), ("approvals", "/approvals", "Approvals" + waiting, "viewer"),
+             ("permissions", "/permissions", "Permissions", "viewer"),
              ("audit", "/audit", "Record integrity", "auditor")]
     if viewer is not None:
         items += [("access", "/access", "Access log", "auditor"), ("people", "/admin/users", "People", "admin")]
@@ -333,6 +346,11 @@ def _explain(f: Finding, a: ActionRecord) -> str:
         return f"It broke a condition of the request: <strong>{_e(f.clause or f.reason)}</strong>."
     if f.check == "spec":
         return "The tool call couldn't be described, so nobody could have authorized it."
+    if f.check == "approval":
+        if f.status == "approved":
+            return f"It was held for a person's approval, and <strong class='ok'>approved</strong>: {_e(f.reason)}."
+        rule = f.clause.split(": ", 1)[-1] if f.clause else "a rule"
+        return f"It needs a person's approval first (<strong>{_e(rule)}</strong>)."
     if f.check == "policy":
         rule = f.clause.split(": ", 1)[-1] if f.clause else "an organisation rule"
         return (f"It broke an organisation rule that no request can override: "
@@ -344,6 +362,11 @@ def _what_it_did(a: ActionRecord) -> str:
     verb = {"delete": "deleted", "archive": "archived", "update": "updated", "share": "shared",
             "send": "sent", "refund": "refunded", "snooze": "snoozed"}.get(a.operation, a.operation)
     noun = "record" if a.scale == 1 else "records"
+    held = (a.detail or {}).get("approval") or {}
+    if held.get("state") in ("pending", "approved", "running"):
+        return (f"<strong>{_e(a.actor)}</strong> wants to {_e(a.operation)} {_e(a.scale)} {noun} in "
+                f"<code>{_e(a.resource)}</code> &mdash; <span class='blocked'>held until a person decides</span> "
+                f"<a href='/approvals/{_e(held.get('id', ''))}'>open it &rarr;</a>")
     if a.blocked:
         return (f"<strong>{_e(a.actor)}</strong> tried to {_e(a.operation)} {_e(a.scale)} {noun} in "
                 f"<code>{_e(a.resource)}</code> &mdash; <span class='blocked'>stopped before it happened</span>")
@@ -571,6 +594,12 @@ def _action_html(a: ActionRecord, verdict: Any = None) -> str:
         # it was checked - before the system behind it saw anything.
         extra += (f" &middot; via the gateway: {_e(detail.get('method', ''))} "
                   f"/{_e(detail.get('upstream', ''))}{_e(detail.get('path', ''))}")
+    held = detail.get("approval") or {}
+    if held:
+        label = {"pending": "HELD", "approved": "HELD", "running": "SENDING", "done": "APPROVED",
+                 "denied": "DENIED", "expired": "EXPIRED", "failed": "NOT SENT"}.get(held.get("state"), label)
+        extra += (f" &middot; <a href='/approvals/{_e(held.get('id', ''))}'>approval</a>"
+                  + (f" decided by {_e(held['decided_by'])}" if held.get("decided_by") else ""))
     out = [f"<div class='action {('unk' if unk else cls) if cls != 'ok' or unk else ''}'>"
            f"<span class='badge {cls}'>{label}</span>"
            f"<span class='mono'>{_e(a.operation)} {_e(a.resource)}</span> "
@@ -578,6 +607,8 @@ def _action_html(a: ActionRecord, verdict: Any = None) -> str:
     for f in a.findings:
         if f.status == "fail":
             out.append(f"<div class='finding mono fail'>&#x2717; {_e(f.reason)}</div>")
+        elif f.status == "approved":
+            out.append(f"<div class='finding mono ok'>&#x2713; {_e(f.reason)}</div>")
         else:
             out.append(f"<div class='finding mono unk'>? {_e(f.reason)}</div>")
     if not a.findings and not a.allowed:
@@ -827,6 +858,124 @@ def permissions_page(store: Store, verifier: Authority | None = None, days: int 
 
 
 # ---- signing in, people, the access log -------------------------------------------------------
+
+# ---- approvals --------------------------------------------------------------------------
+
+_STATE_CHIPS = {"pending": ("blocked", "waiting for a person"), "approved": ("ok", "approved, sending"),
+                "running": ("unk", "sending (or stopped while sending)"), "done": ("ok", "approved and sent"),
+                "failed": ("fail", "approved, but not sent"), "denied": ("fail", "denied"),
+                "expired": ("plain", "expired: nobody decided")}
+
+
+def _approval_card(store: Store, a: Any, *, viewer: Any, csrf: str, full: bool) -> str:
+    """One held request: who asked, what the agent wants to send, why it waits, and the buttons."""
+    record = store.get_action(a.action_id)
+    session = store.get_session(a.session_id)
+    tone, state = _STATE_CHIPS.get(a.state, ("plain", a.state))
+    if a.state == "pending" and a.expired():
+        tone, state = "plain", "expired: nobody decided"
+    what = (f"<strong>{_e(a.actor)}</strong> wants to <strong>{_e(record.operation)}</strong> "
+            f"{_e(record.scale)} record{'s' if record.scale != 1 else ''} in <code>{_e(record.resource)}</code>"
+            + (" &middot; <strong class='fail'>can't be undone</strong>" if record.irreversible else "")
+            if record else f"{_e(a.method)} {_e(a.target)}")
+    request = (f"<div class='quote' style='font-size:17px'>{_e(session.request)}</div>"
+               f"<p class='muted small'>asked by <strong>{_e(a.principal)}</strong> {_identity_chip(session)} "
+               f"&middot; <a href='{_link(a.session_id)}'>the whole request &rarr;</a></p>" if session else "")
+    why = "".join(f"<li>{_e(n.reason)} <span class='muted small'>&middot; {_e(n.rule)}</span></li>" for n in a.needs)
+    held_for = []
+    if record is not None:
+        held_for = [f for f in record.findings if f.status in ("fail", "approved") and f.check != "approval"]
+    beyond = ("<p class='small'>What it goes beyond:</p><ul class='plain small'>"
+              + "".join(f"<li>{_e(f.reason)}</li>" for f in held_for) + "</ul>") if held_for else ""
+    body = a.body_text(4000 if full else 600)
+    sent = (f"<p class='small' style='margin-top:10px'>Exactly what will be sent to <strong>{_e(a.upstream)}</strong>:</p>"
+            f"<pre>{_e(a.method)} {_e(a.target)}" + (f"\n\n{_e(body)}" if body else "") + "</pre>"
+            f"<p class='muted small'>body SHA-256 <span class='mono'>{_e(a.body_sha256[:16])}&hellip;</span> "
+            f"&middot; the gateway sends these bytes, not a new request</p>")
+    outcome = ""
+    if a.decided_by:
+        outcome += (f"<p class='small'>{'Approved' if a.state in ('approved', 'running', 'done', 'failed') else 'Denied'}"
+                    f" by <strong>{_e(a.decided_by)}</strong> at <span class='mono'>"
+                    f"{_e(a.decided_at.isoformat()[:19] if a.decided_at else '')}</span>"
+                    + (f": &ldquo;{_e(a.note)}&rdquo;" if a.note else "") + "</p>")
+    if a.state == "done":
+        outcome += f"<p class='small ok'>Sent. {_e(a.upstream)} answered {_e(a.result_status)}.</p>"
+    if a.state == "failed":
+        outcome += f"<p class='small fail'>Not sent: {_e(a.error)}</p>"
+    buttons = ""
+    if a.state == "pending" and not a.expired():
+        if viewer is None:
+            buttons = ("<p class='muted small'>Deciding needs a signed-in person: turn on dashboard "
+                       "accounts so every decision has a name.</p>")
+        elif a.may_decide(viewer.user.email, is_admin=viewer.user.can("admin")):
+            buttons = (f"<form class='decide' method='post' action='/approvals/{_e(a.approval_id)}'>"
+                       f"<input type='hidden' name='csrf' value='{_e(csrf)}'>"
+                       "<input name='note' maxlength='1000' placeholder='note (optional, kept with the decision)'>"
+                       "<button class='primary' type='submit' name='decision' value='approve'>Approve and send</button>"
+                       "<button class='deny' type='submit' name='decision' value='deny'>Deny</button></form>")
+        else:
+            buttons = f"<p class='muted small'>Waiting for {_e(a.who_decides())}.</p>"
+    title = (f"<h3><a href='/approvals/{_e(a.approval_id)}'>{_e(a.approval_id)}</a></h3>" if not full else "")
+    return (f"<div class='card held'>{title}<p><span class='chip {tone}'>{_e(state)}</span> "
+            f"<span class='muted small'>held <span class='mono'>{_e(a.created_at.isoformat()[:19])}</span>"
+            + (f" &middot; expires <span class='mono'>{_e(a.expires_at.isoformat()[:19])}</span>"
+               if a.state == "pending" else "") + "</span></p>"
+            f"{request}<p>{what}</p><p class='small'>Why it waits:</p><ul class='plain small'>{why}</ul>"
+            f"{beyond}{sent}<p class='muted small'>Who may decide: {_e(a.who_decides())}</p>{outcome}{buttons}</div>")
+
+
+def approvals_page(store: Store, *, csrf: str = "", message: str = "", error: str = "") -> str:
+    """Everything waiting for a person, then what was decided recently."""
+    from ..approvals import Approval
+
+    viewer = current_viewer.get()
+    waiting = [Approval.from_row(r) for r in store.approvals(states=("pending",), limit=100)]
+    waiting = [a for a in waiting if not a.expired()]
+    recent = [Approval.from_row(r) for r in store.approvals(limit=60) if r["state"] != "pending"][:30]
+    mine = [a for a in waiting if viewer is not None and a.may_decide(viewer.user.email,
+                                                                     is_admin=viewer.user.can("admin"))]
+    others = [a for a in waiting if a not in mine]
+    body = ["<h1>Approvals</h1><p class='lede'>Requests the gateway is holding because a rule says a person "
+            "must agree first. Nothing has been sent. Approve, and the gateway sends exactly what is shown, "
+            "once; deny, and it never is. Every decision goes into the tamper-evident log, with your name.</p>"]
+    if error:
+        body.append(f"<div class='error'>{_e(error)}</div>")
+    if message:
+        body.append(f"<p class='ok'>{_e(message)}</p>")
+    if mine:
+        body.append("<h2>Waiting for you</h2>")
+        body += [_approval_card(store, a, viewer=viewer, csrf=csrf, full=False) for a in mine]
+    if others:
+        body.append("<h2>Waiting for someone else</h2>")
+        body += [_approval_card(store, a, viewer=viewer, csrf=csrf, full=False) for a in others]
+    if not waiting:
+        body.append("<div class='card'><p class='muted'>Nothing is waiting.</p></div>")
+    if recent:
+        rows = "".join(
+            f"<tr><td><a href='/approvals/{_e(a.approval_id)}' class='mono'>{_e(a.approval_id)}</a></td>"
+            f"<td>{_e(a.actor)} &middot; <span class='mono'>{_e(a.method)} {_e(a.target[:60])}</span></td>"
+            f"<td>{_e(a.principal)}</td>"
+            f"<td><span class='chip {_STATE_CHIPS.get(a.state, ('plain', ''))[0]}'>{_e(a.state)}</span></td>"
+            f"<td>{_e(a.decided_by or '')}</td></tr>" for a in recent)
+        body.append("<h2>Decided</h2><div class='card'><div class='table-wrap'><table><thead><tr><th>Request</th>"
+                    "<th>What</th><th>Asked by</th><th>Outcome</th><th>Decided by</th></tr></thead><tbody>"
+                    + rows + "</tbody></table></div></div>")
+    return _page("Segurai - approvals", "".join(body), store=store, current="approvals")
+
+
+def approval_page(store: Store, approval_id: str, *, csrf: str = "", message: str = "",
+                  error: str = "") -> str | None:
+    from ..approvals import load
+
+    approval = load(store, approval_id)
+    if approval is None:
+        return None
+    body = (f"<p class='small'><a href='/approvals'>&larr; All approvals</a></p><h1>{_e(approval.approval_id)}</h1>"
+            + (f"<div class='error'>{_e(error)}</div>" if error else "")
+            + (f"<p class='ok'>{_e(message)}</p>" if message else "")
+            + _approval_card(store, approval, viewer=current_viewer.get(), csrf=csrf, full=True))
+    return _page(f"Segurai - {approval.approval_id}", body, store=store, current="approvals")
+
 
 def message_page(title: str, message: str, status_class: str = "") -> str:
     body = f"<div class='card login'><h1>{_e(title)}</h1><p class='{status_class}'>{_e(message)}</p>" \

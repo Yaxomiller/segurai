@@ -337,7 +337,10 @@ def _gateway(t: _Table) -> tuple[Any, tuple[str, int]]:
             raise ConfigError(f"{ut.where}: {exc}") from exc
         ut.done()
     try:
-        config = GatewayConfig(upstreams=tuple(upstreams), mode=t.get("mode", str, "enforce"))
+        config = GatewayConfig(upstreams=tuple(upstreams), mode=t.get("mode", str, "enforce"),
+                               approval_minutes=t.get("approval_minutes", int, 60),
+                               step_up=t.get("step_up", bool, False),
+                               step_up_approvers=t.strings("step_up_approvers"))
     except GatewayConfigError as exc:
         raise ConfigError(f"gateway: {exc}") from exc
     if not upstreams:
@@ -353,7 +356,8 @@ def _alerts(t: _Table) -> tuple[list, timedelta]:
     channels = []
     for ct in t.tables("channels"):
         kind = ct.get("type", str)
-        common = {"name": ct.get("name", str), "on": ct.strings("on", ("violation", "blocked", "tamper"))}
+        common = {"name": ct.get("name", str), "on": ct.strings("on", ("violation", "blocked", "tamper",
+                                                                       "approval"))}
         try:
             if kind == "slack":
                 channels.append(SlackChannel(url=ct.secret("url"), **common))
@@ -432,6 +436,9 @@ def load_config(path: str | Path) -> Config:
     if (t := root.table("witness")) is not None:
         config.witnesses, config.witness_every = _witnesses(t, base)
     root.done()
+    if config.gateway is not None and config.gateway.step_up and config.issuer is None:
+        raise ConfigError("gateway.step_up asks the person when an agent goes beyond the request but not "
+                          "beyond what they may do - which needs [issuer] and its ceilings")
 
     loopback = server.host in ("127.0.0.1", "localhost", "::1")
     if not loopback and config.dashboard is None:
@@ -489,10 +496,20 @@ targets = ["hr.payroll"]
 operations = ["delete"]
 effect = "deny"
 
+# [[policy.rules]]                      # a step-up: held at the gateway until a person approves
+# name = "big permanent CRM changes need a second person"
+# targets = ["crm.*"]
+# effect = "approve"
+# only_irreversible = true
+# above_scale = 100
+# approvers = []                        # emails or patterns; empty = any dashboard admin
+
 # [gateway]                             # agents reach real systems only through here
 # host = "127.0.0.1"
 # port = 8800
 # mode = "enforce"
+# approval_minutes = 60                 # how long a held request waits for a person
+# step_up = false                       # true: beyond the request but inside the person's ceiling -> ask them
 # [[gateway.upstreams]]
 # name = "crm"
 # prefix = "/crm"
@@ -511,7 +528,7 @@ effect = "deny"
 # name = "security"
 # type = "slack"                        # slack | webhook | email
 # url_env = "SLACK_WEBHOOK_URL"
-# on = ["violation", "blocked", "tamper"]
+# on = ["violation", "blocked", "tamper", "approval"]
 
 [witness]                               # checkpoints published outside the database
 every_minutes = 60

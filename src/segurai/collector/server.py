@@ -10,6 +10,7 @@ Endpoints:
     GET  /healthz            "ok"
     GET  /                   the overview, with search and filters
     GET  /sessions/<id>      one request; /sessions/<id>/evidence.zip its evidence pack
+    GET  /approvals          requests held for a person's approval; POST /approvals/<id> decides one
     GET  /permissions        granted versus used
     GET  /audit              record integrity
     GET  /access             who opened what (auditors)
@@ -41,6 +42,7 @@ import binascii
 import hmac
 import json
 import logging
+import re
 import secrets
 import zlib
 from http.cookies import CookieError, SimpleCookie
@@ -65,6 +67,7 @@ DEFAULT_MAX_BODY = 16 * 1024 * 1024
 #: Largest accepted form body (sign-in, people).
 _MAX_FORM = 64 * 1024
 CSRF_COOKIE = "segurai_csrf"
+_APPROVAL = re.compile(r"^/approvals/(apr_[0-9a-f]{16})$")
 
 #: The least role each dashboard page needs.
 _ROLES = (("/access", "auditor"), ("/audit", "auditor"), ("/admin/", "admin"))
@@ -329,6 +332,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_page(200, web.audit_page(store, verifier, witnessed=self._witnessed()))
             elif path == "/permissions":
                 self._send_page(200, web.permissions_page(store, verifier))
+            elif path == "/approvals":
+                self._send_page(200, web.approvals_page(store, csrf=viewer.csrf if viewer else "",
+                                                        message=query.get("done", ""), error=query.get("error", "")))
+            elif (match := _APPROVAL.match(path)) is not None:
+                page = web.approval_page(store, match.group(1), csrf=viewer.csrf if viewer else "",
+                                         message=query.get("done", ""), error=query.get("error", ""))
+                if page is None:
+                    self._send(404, b"no such approval")
+                    return 404
+                self._send_page(200, page)
             elif path == "/access" and viewer is not None:
                 self._send_page(200, web.access_page(store, query.get("email")))
             elif path == "/admin/users" and viewer is not None:
@@ -422,6 +435,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(403, b"cross-site form refused")
                 return
             {"/login": self._login, "/logout": self._logout, "/admin/users": self._people}[path]()
+        elif self.server.auth is not None and (match := _APPROVAL.match(path)) is not None:
+            if not self._same_origin():
+                self._send(403, b"cross-site form refused")
+                return
+            self._decide(match.group(1))
         else:
             self._send(404, b"not found")
 
@@ -539,6 +557,39 @@ class _Handler(BaseHTTPRequestHandler):
             return
         auth.log(by, "POST", "/admin/users", 200, self._client_ip())
         self._redirect("/admin/users?" + urlencode({"done": done}))
+
+    def _decide(self, approval_id: str) -> None:
+        """A person approves or denies a held request. Their name goes on the record."""
+        from ..approvals import ApprovalError, decide
+
+        auth = self.server.auth
+        form = self._form()
+        if form is None:
+            return
+        viewer = self._viewer()
+        if viewer is None:
+            self._send(403, b"sign in to decide")
+            return
+        if not hmac.compare_digest(form.get("csrf", ""), viewer.csrf):
+            self._send(403, b"the form expired; reload the page")
+            return
+        decision = form.get("decision")
+        if decision not in ("approve", "deny"):
+            self._send(400, b"decision must be approve or deny")
+            return
+        where = f"/approvals/{approval_id}"
+        email, ip = viewer.user.email, self._client_ip()
+        try:
+            decide(self.server.store, approval_id, email=email, is_admin=viewer.user.can("admin"),
+                   approve=decision == "approve", note=form.get("note", ""))
+        except ApprovalError as exc:
+            auth.log(email, "POST", where, 409, ip)
+            self._redirect(where + "?" + urlencode({"error": str(exc)}))
+            return
+        auth.log(email, decision.upper(), where, 200, ip)
+        done = ("Approved. The gateway is sending it now." if decision == "approve"
+                else "Denied. It will never be sent.")
+        self._redirect(where + "?" + urlencode({"done": done}))
 
     def _respond(self, report: IngestReport, content_type: str) -> None:
         """Answer in the encoding the client used, as OTLP/HTTP requires.

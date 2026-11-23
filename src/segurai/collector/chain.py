@@ -132,13 +132,16 @@ def render_session(store: Store, session_id: str, show_scopes: bool = True,
             # ok      - within the warrant
             # FAIL    - outside it, recorded in OBSERVE mode: it still went ahead
             # BLOCKED - outside it, stopped in ENFORCE mode: it never happened
+            held = (a.detail or {}).get("approval") or {}
             mark = "ok     " if a.allowed else ("BLOCKED" if a.blocked else "FAIL   ")
+            if held.get("state") in ("pending", "approved", "running"):
+                mark = "HELD   "                 # waiting for a person's approval
             lines.append(f"{child_prefix}   [{mark}] {a.operation} {a.resource} scale={a.scale}")
             # "->" marks a broken rule. "?" marks a rule that could not be
             # checked because the action did not report the evidence it needs.
             if a.findings:
                 for f in a.findings:
-                    marker = "->" if f.status == "fail" else "? "
+                    marker = {"fail": "->", "approved": "ok"}.get(f.status, "? ")
                     lines.append(f"{child_prefix}             {marker} {f.reason}")
             elif not a.allowed:
                 # Records made before findings existed carry only the reason.

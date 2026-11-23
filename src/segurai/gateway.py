@@ -23,6 +23,11 @@ gateway closes that gap by standing in front of the real systems:
     is refused: an action nobody can describe is not one anybody authorized.
   * In enforce mode (the default) a request that breaks anything is refused
     with 403 and never forwarded. In observe mode it is forwarded and flagged.
+  * A request that only needs a person's approval - an organisation rule
+    with effect "approve", or (with ``step_up``) an action beyond the request
+    but inside the person's ceiling - is HELD instead: 202, an approval id,
+    and nothing sent until a person approves it on the dashboard. The agent
+    asks ``GET /_segurai/approvals/<id>`` for the outcome. See approvals.py.
 
 The request is matched strictly, because a proxy that interprets a request
 differently from the system behind it can be walked around:
@@ -52,6 +57,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Mapping
 
@@ -62,20 +68,40 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from ._net import ExclusiveHTTPServer
+from .approvals import (
+    MAX_HELD_BODY,
+    MAX_RESULT_BODY,
+    STEP_UP_RULE,
+    Approval,
+    Need,
+    amend_action,
+    expire_due,
+    load,
+    open_approval,
+    step_up_finding,
+)
 from .authority import Authority, ChainError, verify_chain
 from .collector.store import Store
 from .context import CHAIN_TOKEN_PREFIX, export_chain, import_chain
 from .models import ActionRecord, Finding, Warrant, utcnow
 from .policy import Policy
 
-__all__ = ["Route", "Upstream", "GatewayConfig", "GatewayServer", "GatewayClient",
-           "proof_headers", "CHAIN_HEADER", "PROOF_HEADER", "GatewayConfigError"]
+__all__ = ["Route", "Upstream", "GatewayConfig", "GatewayServer", "GatewayClient", "ApprovalRunner",
+           "proof_headers", "CHAIN_HEADER", "PROOF_HEADER", "APPROVAL_HEADER", "GatewayConfigError",
+           "ApprovalDenied"]
 
 _log = logging.getLogger("segurai.gateway")
 
 CHAIN_HEADER = "X-Segurai-Chain"
 PROOF_HEADER = "X-Segurai-Proof"
 ACTION_HEADER = "X-Segurai-Action"
+APPROVAL_HEADER = "X-Segurai-Approval"
+#: The gateway's own paths. No upstream may live here.
+OWN_PREFIX = "/_segurai"
+#: Warrant checks a step-up may answer. Never "policy" (no request overrides a
+#: rule) and never "spec" (nobody can approve what nobody can describe).
+_STEP_UP_CHECKS = frozenset({"operation", "target", "scale", "total", "irreversible", "condition"})
+_APPROVAL_PATH = re.compile(r"^/_segurai/approvals/(apr_[0-9a-f]{16})$")
 
 #: How far a proof's timestamp may be from the gateway's clock, either way.
 PROOF_WINDOW_SECONDS = 60
@@ -176,6 +202,8 @@ class Upstream:
     def __post_init__(self) -> None:
         if not self.prefix.startswith("/") or self.prefix != "/" + self.prefix.strip("/"):
             raise GatewayConfigError(f"upstream {self.name}: prefix must look like /crm")
+        if self.prefix == OWN_PREFIX or self.prefix.startswith(OWN_PREFIX + "/"):
+            raise GatewayConfigError(f"upstream {self.name}: {OWN_PREFIX} is the gateway's own")
         parsed = urllib.parse.urlsplit(self.url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise GatewayConfigError(f"upstream {self.name}: url must be http(s)://host[:port][/base]")
@@ -191,10 +219,20 @@ class GatewayConfig:
     mode: str = "enforce"                        # enforce | observe
     max_body: int = 10 * 1024 * 1024
     max_response: int = 50 * 1024 * 1024
+    #: How long a held request waits for a person (never past the agent's warrant).
+    approval_minutes: int = 60
+    #: Hold, rather than refuse, actions beyond the request but inside the
+    #: person's ceiling - and ask the person. Needs the issuer's ceilings.
+    step_up: bool = False
+    #: Besides the person who asked, who may decide a step-up (glob patterns
+    #: over dashboard emails; empty = any dashboard admin).
+    step_up_approvers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in ("enforce", "observe"):
             raise GatewayConfigError("gateway mode must be 'enforce' or 'observe'")
+        if isinstance(self.approval_minutes, bool) or not 1 <= self.approval_minutes <= 7 * 24 * 60:
+            raise GatewayConfigError("approval_minutes must be between 1 and 10080 (a week)")
         prefixes = [u.prefix for u in self.upstreams]
         if len(set(prefixes)) != len(prefixes):
             raise GatewayConfigError("two upstreams share a prefix")
@@ -322,6 +360,133 @@ class _Nonces:
             return True
 
 
+# ---- talking to an upstream ------------------------------------------------------------------
+
+def _send_upstream(upstream: Upstream, method: str, rest: str, query_string: str, body: bytes,
+                   headers: list[tuple[str, str]], max_response: int) -> tuple[int, list[tuple[str, str]], bytes]:
+    """Send one request on, with the upstream's credential, and read the answer.
+
+    http.client never follows redirects, so a 3xx from the upstream goes
+    back to the agent as it is - the gateway never ends up talking to a
+    system it wasn't configured for.
+    """
+    base = urllib.parse.urlsplit(upstream.url)
+    path = base.path.rstrip("/") + (rest or "/")
+    target = path + (f"?{query_string}" if query_string else "")
+    out = {k: v for k, v in headers if k.lower() not in _DROP_REQUEST_HEADERS}
+    out.update(upstream.headers)
+    out["Host"] = base.netloc
+    if body or method in ("POST", "PUT", "PATCH"):
+        out["Content-Length"] = str(len(body))
+    cls = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
+    connection = cls(base.hostname, base.port, timeout=upstream.timeout)
+    try:
+        connection.request(method, target, body=body or None, headers=out)
+        response = connection.getresponse()
+        payload = response.read(max_response + 1)
+        if len(payload) > max_response:
+            raise _Refusal(502, "the upstream's answer is larger than the gateway carries")
+        return response.status, response.getheaders(), payload
+    except (OSError, http.client.HTTPException) as exc:
+        raise _Refusal(502, f"the upstream {upstream.name} could not be reached: "
+                            f"{exc.__class__.__name__}") from exc
+    finally:
+        connection.close()
+
+
+class ApprovalRunner:
+    """Sends the held requests people approved, and expires the ones nobody decided.
+
+    Runs beside the gateway (started by ``serve_forever``). With several
+    gateways on one database each request is claimed before it is sent, so
+    exactly one of them sends it.
+    """
+
+    def __init__(self, server: "GatewayServer", poll_seconds: float = 0.5):
+        self.server = server
+        self.poll_seconds = poll_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()               # start and stop may race (shutdown at start-up)
+
+    def run_once(self) -> int:
+        """One pass. Returns how many approved requests were sent (or tried)."""
+        store = self.server.store
+        expire_due(store)
+        sent = 0
+        for row in store.approvals(states=("approved",), limit=50):
+            claimed = store.transition_approval(row["approval_id"], ("approved",), {"state": "running"})
+            if claimed is None:                       # another gateway took it
+                continue
+            self._send(Approval.from_row(claimed))
+            sent += 1
+        return sent
+
+    def _send(self, approval: Approval) -> None:
+        server, store = self.server, self.server.store
+        upstream = next((u for u in server.config.upstreams if u.name == approval.upstream), None)
+        error = None if upstream is not None else f"the gateway no longer has an upstream called {approval.upstream}"
+        record = store.get_action(approval.action_id)
+        if error is None and record is not None:
+            # The organisation's rules may have changed while it waited.
+            try:
+                holders = [w.holder for w in store.chain_to(record.warrant_id)]
+            except ValueError:
+                holders = [record.actor]
+            hard = [f for f in server.policy.evaluate(record.operation, record.resource, record.scale,
+                                                      record.irreversible, principal=approval.principal,
+                                                      holders=holders)
+                    if f.status == "fail" and f.check != "approval"]
+            if hard:
+                error = "the organisation's rules changed while it waited: " + "; ".join(f.reason for f in hard)
+        changes: dict[str, Any] = {"finished_at": utcnow().isoformat()}
+        if error is None:
+            try:
+                status, headers, payload = _send_upstream(upstream, approval.method, approval.path, approval.query,
+                                                          approval.body, list(approval.headers),
+                                                          server.config.max_response)
+            except _Refusal as refusal:
+                error = refusal.message
+            else:
+                result: dict[str, Any] = {
+                    "status": status,
+                    "headers": [[k, v] for k, v in headers if k.lower() not in _DROP_RESPONSE_HEADERS]}
+                if len(payload) <= MAX_RESULT_BODY:
+                    result["body"] = base64.b64encode(payload).decode("ascii")
+                else:
+                    result["body_omitted"] = len(payload)
+                changes.update(state="done", result_status=status, result_json=json.dumps(result, sort_keys=True))
+        if error is not None:
+            changes.update(state="failed", error=error[:500])
+        row = store.transition_approval(approval.approval_id, ("running",), changes)
+        if row is not None:
+            amend_action(store, Approval.from_row(row))
+
+    def start(self) -> "ApprovalRunner":
+        with self._lock:
+            if self._thread is None:
+                self._stop.clear()
+                thread = threading.Thread(target=self._loop, name="segurai-approvals", daemon=True)
+                thread.start()
+                self._thread = thread
+        return self
+
+    def stop(self, timeout: float = 5.0) -> None:
+        with self._lock:
+            self._stop.set()
+            thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.run_once()
+            except Exception:
+                _log.exception("approval runner pass failed; trying again shortly")
+            self._stop.wait(self.poll_seconds)
+
+
 # ---- the server ----------------------------------------------------------------------------
 
 class _Refusal(Exception):
@@ -337,14 +502,76 @@ class GatewayServer(ExclusiveHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], config: GatewayConfig, store: Store,
-                 verifier: Authority, policy: Policy | None = None, on_action: Any = None):
+                 verifier: Authority, policy: Policy | None = None, on_action: Any = None,
+                 ceilings: Any = (), run_approvals: bool = True):
         self.config = config
         self.store = store
         self.verifier = verifier.public_only() if verifier.can_sign else verifier
         self.policy = policy or Policy()
         self.nonces = _Nonces()
         self.on_action = on_action                  # e.g. the alert dispatcher
+        #: The issuer's ceilings by name: what each person may do at all (step-up).
+        self.ceilings = {c.name: c for c in ceilings or ()}
+        if config.step_up and not self.ceilings:
+            raise GatewayConfigError("step_up needs the issuer's ceilings: without them the gateway can't "
+                                     "tell what a person may do beyond the request")
+        #: Sends approved requests. ``run_approvals=False`` leaves that to the
+        #: caller (``server.approvals.run_once()``), for tests and tools.
+        self.approvals = ApprovalRunner(self)
+        self.run_approvals = run_approvals
         super().__init__(address, _GatewayHandler)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        # The approval runner lives exactly as long as the gateway serves.
+        if self.run_approvals:
+            self.approvals.start()
+        try:
+            super().serve_forever(poll_interval)
+        finally:
+            self.approvals.stop()
+
+    def holds_for(self, failures: list[Finding], leaf: Warrant, *, operation: str, resource: str,
+                  scale: int, irreversible: bool, evidence: dict[str, Any],
+                  body: bytes) -> tuple[list[Need], list[Finding]] | None:
+        """Could a person release this, instead of it being refused? (needs, extra findings) or None.
+
+        Only when EVERY failure is something a person may answer: approve
+        rules, and - with step_up - warrant checks the person's own ceiling
+        would pass. Anything else is refused as it always was.
+        """
+        if len(body) > MAX_HELD_BODY:
+            return None
+        needs: list[Need] = []
+        extra: list[Finding] = []
+        for f in (f for f in failures if f.check == "approval"):
+            rule = self.policy.rule(f.clause.split(": ", 1)[1]) if ": " in f.clause else None
+            if rule is None:
+                return None
+            needs.append(Need(rule.name, rule.reason or f.reason, rule.approvers, rule.allow_requester))
+        beyond = [f for f in failures if f.check != "approval"]
+        if beyond:
+            if not self.config.step_up or any(f.check not in _STEP_UP_CHECKS for f in beyond):
+                return None
+            ceiling = self._ceiling_for(leaf)
+            if ceiling is None:
+                return None
+            changed = (self.store.changed_total(leaf.session_id)
+                       if ceiling.scope.max_total is not None else 0)
+            under = ceiling.scope.evaluate(operation, resource, scale, irreversible, evidence=evidence,
+                                           changed_so_far=changed)
+            if any(f.status == "fail" for f in under):
+                return None
+            principal = leaf.root_principal
+            needs.append(Need(STEP_UP_RULE, f"It goes beyond what {principal} asked for, but not beyond what "
+                                            f"{principal} may do.", self.config.step_up_approvers, True))
+            extra.append(step_up_finding(principal, ceiling.name))
+        return (needs, extra) if needs else None
+
+    def _ceiling_for(self, leaf: Warrant) -> Any:
+        session = self.store.get_session(leaf.session_id)
+        if session is None or not session.identity or not isinstance(session.contract, dict):
+            return None                                 # only proven people, issued under a ceiling
+        return self.ceilings.get(session.contract.get("issued_under"))
 
     def upstream_for(self, path: str) -> Upstream | None:
         best = None
@@ -422,6 +649,9 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         body = self._body()
         path, _, query_string = target.partition("?")
         _check_canonical(path)
+        if path == OWN_PREFIX or path.startswith(OWN_PREFIX + "/"):
+            self._own(method, target, path, body)
+            return
 
         upstream = self.server.upstream_for(path)
         if upstream is None:
@@ -432,8 +662,20 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(query_string, keep_blank_values=True)
         rest = path[len(upstream.prefix):]
         segments = [urllib.parse.unquote(s) for s in rest.strip("/").split("/")] if rest.strip("/") else []
-        record, forward = self._decide(method, upstream, segments, query, body, chain, leaf)
-        if not forward:
+        record, decision, approval = self._decide(method, upstream, segments, query, body, chain, leaf,
+                                                  rest=rest, query_string=query_string)
+        if decision == "hold":
+            self._reply(202, {
+                "state": "pending", "held": True, "approval_id": approval.approval_id,
+                "action_id": record.action_id, "expires_at": approval.expires_at.isoformat(),
+                "why": [f.reason for f in record.findings if f.status == "fail"],
+                "who_decides": approval.who_decides(),
+                "check": f"{OWN_PREFIX}/approvals/{approval.approval_id}",
+                "message": "Held for a person's approval. Nothing has been sent yet. Ask the check "
+                           "address for the outcome.",
+            }, {ACTION_HEADER: record.action_id, APPROVAL_HEADER: approval.approval_id})
+            return
+        if decision == "refuse":
             raise _Refusal(403, f"refused: {record.violation}", record.action_id, list(record.findings))
 
         status, headers, payload = self._forward(method, upstream, rest, query_string, body)
@@ -487,10 +729,31 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             raise _Refusal(401, "this proof was already used")
         return chain, leaf
 
+    def _own(self, method: str, target: str, path: str, body: bytes) -> None:
+        """The gateway's own endpoint: an agent asking what happened to a held request."""
+        _, leaf = self._authenticate(method, target, body)
+        match = _APPROVAL_PATH.match(path)
+        if match is None or method not in ("GET", "HEAD"):
+            raise _Refusal(404, f"the gateway's own paths are GET {OWN_PREFIX}/approvals/<id>")
+        store = self.server.store
+        approval = load(store, match.group(1))
+        # Only an agent of the same request may ask: approvals are not a
+        # directory of everything waiting in the organisation.
+        if approval is None or approval.session_id != leaf.session_id:
+            raise _Refusal(404, "no such held request for this session")
+        if approval.expired():
+            expire_due(store)
+            approval = load(store, approval.approval_id) or approval
+        self._reply(200, approval.public(), {APPROVAL_HEADER: approval.approval_id})
+
     def _decide(self, method: str, upstream: Upstream, segments: list[str],
                 query: dict[str, list[str]], body: bytes, chain: list[Warrant],
-                leaf: Warrant) -> tuple[ActionRecord, bool]:
-        """Describe the request as an action, check it, record it. Returns (record, forward?)."""
+                leaf: Warrant, *, rest: str = "", query_string: str = "",
+                ) -> tuple[ActionRecord, str, Approval | None]:
+        """Describe the request as an action, check it, record it.
+
+        Returns (record, "forward" | "refuse" | "hold", the approval when held).
+        """
         detail: dict[str, Any] = {"via": "gateway", "upstream": upstream.name, "method": method,
                                   "path": "/" + "/".join(segments)}
         parsed_json: Any = _NO_JSON
@@ -523,27 +786,53 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             detail.update(evidence)
         except _Undescribable as exc:
             operation, resource, scale, irreversible = method.lower(), f"{upstream.name}.undescribed", 1, False
+            evidence = {}
             findings = [Finding("spec", "fail", str(exc), "every gateway request must match a route")]
 
         failures = [f for f in findings if f.status == "fail"]
         enforce = self.server.config.mode == "enforce"
+        hold = None
+        if failures and enforce:
+            hold = self.server.holds_for(failures, leaf, operation=operation, resource=resource, scale=scale,
+                                         irreversible=irreversible, evidence=evidence, body=body)
+        approval_id = f"apr_{uuid.uuid4().hex[:16]}" if hold else None
+        if hold:
+            findings = [*findings, *hold[1]]
+            failures = [f for f in findings if f.status == "fail"]
+            detail["approval"] = {"id": approval_id, "state": "pending"}
+        violation = "; ".join(f.reason for f in failures) or None
+        if hold and violation:
+            violation = "held for a person's approval: " + violation
         record = ActionRecord(
             action_id=f"act_{uuid.uuid4().hex[:16]}", session_id=leaf.session_id,
             warrant_id=leaf.warrant_id, actor=leaf.holder, operation=operation, resource=resource,
             scale=scale, irreversible=irreversible, at=utcnow(), allowed=not failures,
-            violation="; ".join(f.reason for f in failures) or None,
-            blocked=bool(failures) and enforce, findings=tuple(findings), detail=detail,
+            violation=violation, blocked=bool(failures) and enforce, findings=tuple(findings), detail=detail,
         )
         # Written BEFORE anything is forwarded: if the gateway dies mid-request,
-        # the attempt is still on the record.
-        self._store_chain(chain)
-        self.server.store.put_action(record)
+        # the attempt is still on the record. A held request and its record
+        # are written together, so neither exists without the other.
+        store = self.server.store
+        approval = None
+        with store._tx():
+            self._store_chain(chain)
+            store.put_action(record)
+            if hold:
+                expires = min(utcnow() + timedelta(minutes=self.server.config.approval_minutes), leaf.expires_at)
+                forwardable = [(k, v) for k, v in self.headers.items()
+                               if k.lower() not in _DROP_REQUEST_HEADERS][:50]
+                approval = open_approval(store, record, principal=leaf.root_principal, upstream=upstream.name,
+                                         method=method, path=rest or "/", query=query_string,
+                                         headers=forwardable, body=body, needs=hold[0], expires_at=expires,
+                                         approval_id=approval_id)
         if self.server.on_action is not None:
             try:
                 self.server.on_action(record)
             except Exception:
                 _log.warning("gateway on_action hook failed", exc_info=True)
-        return record, not record.blocked
+        if hold:
+            return record, "hold", approval
+        return record, ("refuse" if record.blocked else "forward"), None
 
     def _store_chain(self, chain: list[Warrant]) -> None:
         store = self.server.store
@@ -556,34 +845,8 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 
     def _forward(self, method: str, upstream: Upstream, rest: str, query_string: str,
                  body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
-        """Send the request on, with the upstream's credential, and read the answer.
-
-        http.client never follows redirects, so a 3xx from the upstream goes
-        back to the agent as it is - the gateway never ends up talking to a
-        system it wasn't configured for.
-        """
-        base = urllib.parse.urlsplit(upstream.url)
-        path = base.path.rstrip("/") + (rest or "/")
-        target = path + (f"?{query_string}" if query_string else "")
-        headers = {k: v for k, v in self.headers.items() if k.lower() not in _DROP_REQUEST_HEADERS}
-        headers.update(upstream.headers)
-        headers["Host"] = base.netloc
-        if body or method in ("POST", "PUT", "PATCH"):
-            headers["Content-Length"] = str(len(body))
-        cls = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
-        connection = cls(base.hostname, base.port, timeout=upstream.timeout)
-        try:
-            connection.request(method, target, body=body or None, headers=headers)
-            response = connection.getresponse()
-            payload = response.read(self.server.config.max_response + 1)
-            if len(payload) > self.server.config.max_response:
-                raise _Refusal(502, "the upstream's answer is larger than the gateway carries")
-            return response.status, response.getheaders(), payload
-        except (OSError, http.client.HTTPException) as exc:
-            raise _Refusal(502, f"the upstream {upstream.name} could not be reached: "
-                                f"{exc.__class__.__name__}") from exc
-        finally:
-            connection.close()
+        return _send_upstream(upstream, method, rest, query_string, body, list(self.headers.items()),
+                              self.server.config.max_response)
 
     def _amend(self, record: ActionRecord, status: int) -> None:
         """Note what the upstream answered. The log keeps the original entry too."""
@@ -607,6 +870,15 @@ def _check_canonical(path: str) -> None:
 
 # ---- the client ------------------------------------------------------------------------------
 
+class ApprovalDenied(Exception):
+    """A held request that a person denied, that expired, or that could not be sent."""
+
+    def __init__(self, state: str, detail: dict[str, Any]):
+        super().__init__(f"the request was {state}" + (f": {detail.get('note') or detail.get('error')}"
+                                                        if detail.get("note") or detail.get("error") else ""))
+        self.state, self.detail = state, detail
+
+
 class GatewayClient:
     """Call systems through the gateway, signing each request with the current warrant's key.
 
@@ -622,7 +894,46 @@ class GatewayClient:
         self.timeout = timeout
 
     def request(self, method: str, target: str, body: bytes | Mapping[str, Any] | list | None = None,
-                headers: Mapping[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
+                headers: Mapping[str, str] | None = None,
+                wait: float | None = None) -> tuple[int, dict[str, str], bytes]:
+        """Send one request. A held one comes back 202 - or, with ``wait`` (seconds),
+        the system's answer once a person approves it (see :meth:`wait`)."""
+        status, out_headers, payload = self._send(method, target, body, headers)
+        held = {k.lower(): v for k, v in out_headers.items()}.get(APPROVAL_HEADER.lower())
+        if status == 202 and held and wait:
+            return self.wait(held, timeout=wait)
+        return status, out_headers, payload
+
+    def status(self, approval_id: str) -> dict[str, Any]:
+        """Where a held request stands: its state, and the system's answer once sent."""
+        status, _, payload = self._send("GET", f"{OWN_PREFIX}/approvals/{approval_id}", None, None)
+        data = json.loads(payload or b"{}")
+        if status != 200:
+            raise ApprovalDenied("unknown", data)
+        return data
+
+    def wait(self, approval_id: str, timeout: float = 600.0, poll: float = 1.0) -> tuple[int, dict[str, str], bytes]:
+        """Wait for a person to decide. Returns the system's answer, as :meth:`request` would.
+
+        Raises :class:`ApprovalDenied` if it was denied, expired or could not
+        be sent, and TimeoutError if nobody decided within ``timeout``.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            data = self.status(approval_id)
+            state = data.get("state")
+            if state == "done":
+                result = data.get("result") or {}
+                body = base64.b64decode(result.get("body", "")) if "body" in result else b""
+                return int(result.get("status", 0)), {k: v for k, v in result.get("headers", [])}, body
+            if state in ("denied", "expired", "failed"):
+                raise ApprovalDenied(state, data)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"nobody decided {approval_id} within {timeout:.0f} s")
+            time.sleep(poll)
+
+    def _send(self, method: str, target: str, body: bytes | Mapping[str, Any] | list | None,
+              headers: Mapping[str, str] | None) -> tuple[int, dict[str, str], bytes]:
         if not target.startswith("/"):
             raise ValueError("target must be a path like /crm/opportunities/7")
         out_headers = dict(headers or {})

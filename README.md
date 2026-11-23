@@ -391,6 +391,8 @@ Agents are given the gateway's address instead of the CRM's (or the billing syst
 2. is matched to a route that says what it does, for example `DELETE /opportunities/{id}` → *delete one crm.opportunities record, irreversibly*;
 3. is checked against the warrant and the company's rules, recorded before it is sent, and forwarded only if allowed.
 
+Some actions are fine only if a person agrees. Those are **held** rather than refused: the agent gets a 202 and an approval id, a person approves or denies it on the dashboard's Approvals page, and only then does the gateway send the exact request it was holding, once. See *Company rules* below.
+
 ```python
 from segurai.gateway import GatewayClient
 
@@ -420,11 +422,23 @@ operations = ["delete"]
 effect = "deny"
 ```
 
-Rules are either **deny** or **limit** (a maximum size, or no irreversible actions), and can be scoped to people, agents, operations or targets. No request or grant can override them. Every version of the rules is written into the tamper-evident log, and each finding names the version in force.
+```toml
+[[policy.rules]]
+name = "big permanent CRM changes need a second person"
+targets = ["crm.*"]
+effect = "approve"              # held at the gateway until a person says yes
+only_irreversible = true
+above_scale = 100
+approvers = ["*@security.acme.example"]   # empty = any dashboard admin; never the requester unless allow_requester
+```
+
+Rules are **deny**, **limit** (a maximum size, or no irreversible actions) or **approve** (a step-up: held for a person's yes). They can be scoped to people, agents, operations or targets. No request or grant can override them. Every version of the rules is written into the tamper-evident log, and each finding names the version in force.
+
+With `step_up = true` in `[gateway]`, an agent that goes beyond what the request asked for, but not beyond what the person may do at all, is held too, and the person who asked decides.
 
 ## Alerts, witnesses and evidence packs
 
-- **Alerts** go to Slack, a webhook (signed with HMAC) or email when an action breaks a rule, is blocked, or the log fails its audit. Delivery is retried with backoff. Each alert is queued once and sent by exactly one server, however many share the database.
+- **Alerts** go to Slack, a webhook (signed with HMAC) or email when an action breaks a rule, is blocked, is waiting for an approval, or the log fails its audit. Delivery is retried with backoff. Each alert is queued once and sent by exactly one server, however many share the database.
 - **Witnesses**: checkpoints are also published outside the database, to an append-only file or a webhook. `segurai audit --witness FILE` then catches a rewrite even by someone holding the signing key.
 - **Evidence packs**: `segurai evidence <session>` writes a zip for one request. It contains the records, their log entries, a signed checkpoint, the public key and a readable report. `segurai evidence-verify pack.zip --key org.pub` checks it with nothing else. An auditor needs neither access to the system nor trust in whoever sent it.
 

@@ -345,11 +345,31 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 - The action is checked against the warrant and the company's rules, and recorded before anything is forwarded. A refusal never reaches the system.
 - Paths are parsed strictly. Duplicate JSON keys are refused, method-override headers are dropped, and redirects are not followed.
 
-**Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny and limit rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force.
+**Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny, limit and approve rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force.
+
+**Step-up approvals** ([`approvals.py`](../src/segurai/approvals.py)). Some actions are fine only if a person agrees. The gateway holds those instead of refusing them.
+
+- Two things can hold a request: an `approve` rule, or (with `step_up = true`) an action beyond the request's warrant but within the ceiling the person's session was issued under. A request is held only when *every* reason it would be refused is one a person may answer; anything else is refused as before.
+- The gateway records the action as blocked, stores the exact request (method, path, headers without credentials, body) beside it in the same transaction, and answers 202 with an approval id.
+- Who may decide is stored with the request. For an approve rule it is the rule's `approvers`, or any dashboard admin, and never the person who asked unless `allow_requester`. For a step-up it is the person who asked (it is within their own authority), or `step_up_approvers`.
+- Deciding is a compare-and-set under the log's lock: exactly one decision wins. An approval runner beside the gateway claims each approved request (`approved` → `running`) the same way before sending it, so it is sent at most once, even with several gateways. If a gateway stops while sending, the request stays `running`: an honest "outcome unknown" is better than a second permanent delete.
+- Just before sending, the company's rules are checked again. A request approved under rules that have since changed is not sent.
+- A held request expires after `approval_minutes`, or when the agent's warrant expires if that comes first.
+- When it is sent, the action's record is amended: allowed, not blocked, each finding marked `approved` with the decider's name. The log keeps every version, and the evidence pack carries the held request and the decision.
+
+| State | Meaning |
+|---|---|
+| `pending` | waiting for a person |
+| `approved` | a person said yes; the runner sends it within a second |
+| `running` | being sent, or the gateway stopped while sending (outcome unknown) |
+| `done` | sent; the system's answer is kept for the agent |
+| `failed` | approved, but not sent (rules changed, system unreachable) |
+| `denied` | a person said no |
+| `expired` | nobody decided in time |
 
 **Alerts** ([`alerts.py`](../src/segurai/alerts.py)).
 
-- A worker follows the actions table and queues an alert for each violation, each blocked action, and each failed audit. The queue's unique key means an alert is queued only once.
+- A worker follows the actions table and queues an alert for each violation, each blocked action, each request held for approval (with a link to it), and each failed audit. The queue's unique key means an alert is queued only once.
 - It delivers alerts to Slack, a webhook (HMAC-signed) or email, retrying with backoff up to eight times.
 - With several servers on one database, each alert is claimed just before it is sent, so exactly one server sends it.
 
@@ -373,7 +393,8 @@ src/segurai/
   runtime.py           session, agent, delegate, act, tool, configure, listeners
   scenarios.py         the Tier 1 scenario suite (M2)
   report.py            the scope-creep report (M6)
-  policy.py            company rules: deny and limit, versioned
+  policy.py            company rules: deny, limit and approve, versioned
+  approvals.py         step-up approvals: held requests, who may decide, deciding, expiry
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -441,6 +462,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_approvals.py` | a held request never reaches the system before a decision; approved, the exact bytes are sent once, even with several runners; the requester can't approve their own; denial, expiry, changed rules; step-up never reaches past the ceiling, a rule or an unproven person; the dashboard's buttons, alerts and evidence packs |
 | `test_policy.py`, `test_alerts.py`, `test_witness.py`, `test_evidence.py` | company rules beat grants; alerts are queued once, retried, and sent by exactly one server; witnessed checkpoints catch a key-holder's rewrite; evidence packs verify alone and reveal tampering |
 | `test_accounts.py`, `test_serve.py`, `test_deploy.py` | sign-in, roles, CSRF, throttling and the access log; a whole deployment from one file; configuration mistakes named; ports never shared |
 | `test_postgres.py` | SQL translation; a failed write leaves nothing; on PostgreSQL, three servers appending at once never fork the log and dropped connections recover safely |

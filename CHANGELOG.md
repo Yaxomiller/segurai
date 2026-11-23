@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **Step-up approvals: an action can wait for a person's yes instead of being refused** ([`approvals.py`](src/segurai/approvals.py)).
+  - A company rule with `effect = "approve"` holds matching requests at the gateway. It can be limited to actions that can't be undone (`only_irreversible`) and to changes above a size (`above_scale`). It can name who may decide (`approvers`, glob patterns over dashboard emails; empty means any admin). By default the person who asked may not approve their own request (`allow_requester`).
+  - With `[gateway] step_up = true`, an action beyond what the request's warrant allows, but within the ceiling the person's session was issued under, is held and the person is asked. A deny rule, a limit rule, anything past the ceiling, an unproven person, or a request no route describes is still refused.
+  - A held request gets a 202 and an approval id; nothing is sent. The gateway keeps exactly the request it received, and the approval page shows those bytes. Approved, the gateway sends them once with the system's credential and keeps the answer for the agent (`GET /_segurai/approvals/<id>`, or `GatewayClient.request(..., wait=600)`).
+  - Exactly once: each approved request is claimed under the log's lock before it is sent, so two gateways or a double click can never send it twice. The company's rules are checked again just before sending. A held request expires after `approval_minutes` (default 60), or when the agent's warrant does, whichever comes first.
+  - A new **Approvals** page on the dashboard, with Approve and Deny buttons (CSRF-protected), the decider's name and an optional note. Each decision goes into the access log.
+  - Every held request, decision and outcome is in the tamper-evident log and in the request's evidence pack. A new alert event, `approval`, links straight to the request waiting for a decision.
+  - In the runtime (outside the gateway) an approve rule counts as broken, because there is no one to ask.
+
 - **The live stage** (`segurai stage`, extra `segurai[stage]`): real Claude agents at work in a simulated company, with Segurai deciding what they may do, on one screen made for people who don't read code.
   - Two scenes. An eager agent tries to delete $1.7M of live deals, and an obedient agent is asked by an intern who isn't allowed. Both are stopped by the gateway before the CRM sees the request.
   - A person signs in to a stand-in login system, the issuer grants a slip within their group's ceiling, and each agent hop narrows it. Every CRM request goes through the gateway. Nothing on the Segurai side is simulated.

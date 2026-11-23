@@ -17,10 +17,25 @@ ever granted, whatever a request or a person's permissions say:
     max_scale   = 20
     irreversible = false                       # nothing that can't be undone
 
-Rules only ever TAKE AWAY. A rule can deny an action or cap it; there is no
-"allow" rule, so a policy can never widen what a warrant granted. That keeps
-the two easy to reason about together: an action must fit its warrant AND
-every rule.
+    [[policy.rules]]
+    name              = "permanent CRM changes need a second person"
+    targets           = ["crm.*"]
+    effect            = "approve"
+    only_irreversible = true                   # only what can't be undone...
+    above_scale       = 100                    # ...and only above 100 records (both must hold)
+    approvers         = ["*@acme.example"]     # who may decide; empty = any dashboard admin
+    reason            = "A big permanent change is a decision for a person."
+
+Rules only ever TAKE AWAY. A rule can deny an action, cap it, or hold it for
+a person's approval; there is no "allow" rule, so a policy can never widen
+what a warrant granted. That keeps the two easy to reason about together: an
+action must fit its warrant AND every rule.
+
+An "approve" rule is a step-up: the action is not refused, it waits. Only
+the gateway can hold a request (approvals.py) - it has the request, and the
+credential to send it later. Everywhere else an approval rule simply counts
+as broken, because there is nobody to ask: the safe reading of "needs a
+person's yes" when no person can be asked is "no".
 
 Where rules are checked:
   * the runtime, on every ``act()`` and guarded tool call (a finding with
@@ -47,7 +62,7 @@ from .models import NON_MUTATING, Finding, pattern_covers
 __all__ = ["Rule", "Policy", "PolicyError", "EFFECTS"]
 
 #: What a rule can do. Deliberately no "allow".
-EFFECTS = ("deny", "limit")
+EFFECTS = ("deny", "limit", "approve")
 
 
 class PolicyError(ValueError):
@@ -93,6 +108,11 @@ class Rule:
     max_scale: int | None = None        # limit: records one changing action may touch
     irreversible: bool | None = None    # limit: False forbids anything irreversible
     reason: str = ""
+    # approve rules only: when the rule applies, and who may say yes.
+    above_scale: int | None = None      # only changes touching more than this many records
+    only_irreversible: bool = False     # only actions that can't be undone
+    approvers: tuple[str, ...] = ()     # glob patterns over dashboard emails; empty = any admin
+    allow_requester: bool = False       # may the person who asked approve it themselves?
 
     def __post_init__(self) -> None:
         if not self.name or not isinstance(self.name, str):
@@ -101,8 +121,15 @@ class Rule:
             raise PolicyError(f"rule {self.name!r}: effect must be one of {EFFECTS}, got {self.effect!r}")
         if self.effect == "limit" and self.max_scale is None and self.irreversible is None:
             raise PolicyError(f"rule {self.name!r}: a limit rule needs max_scale or irreversible = false")
-        if self.effect == "deny" and (self.max_scale is not None or self.irreversible is not None):
+        if self.effect != "limit" and (self.max_scale is not None or self.irreversible is not None):
             raise PolicyError(f"rule {self.name!r}: max_scale and irreversible belong to limit rules")
+        if self.effect != "approve" and (self.above_scale is not None or self.only_irreversible
+                                         or self.approvers or self.allow_requester):
+            raise PolicyError(f"rule {self.name!r}: above_scale, only_irreversible, approvers and "
+                              f"allow_requester belong to approve rules")
+        if self.above_scale is not None and (isinstance(self.above_scale, bool)
+                                             or not isinstance(self.above_scale, int) or self.above_scale < 0):
+            raise PolicyError(f"rule {self.name!r}: above_scale must be a whole number, zero or more")
         if self.max_scale is not None and (isinstance(self.max_scale, bool) or not isinstance(self.max_scale, int)
                                            or self.max_scale < 0):
             raise PolicyError(f"rule {self.name!r}: max_scale must be a whole number, zero or more")
@@ -133,6 +160,16 @@ class Rule:
         clause = f"policy {version}: {self.name}"
         if self.effect == "deny":
             return Finding("policy", "fail", f"organisation rule {self.name!r} forbids this{why}", clause)
+        if self.effect == "approve":
+            if self.only_irreversible and not irreversible:
+                return None
+            if self.above_scale is not None and (operation in NON_MUTATING or scale <= self.above_scale):
+                return None
+            # "fail" until a person says yes: anything that doesn't know about
+            # approvals treats it as broken, which is the safe default.
+            return Finding("approval", "fail",
+                           f"organisation rule {self.name!r} needs a person to approve this first{why}",
+                           clause)
         if (self.max_scale is not None and operation not in NON_MUTATING and scale > self.max_scale):
             return Finding("policy", "fail",
                            f"organisation rule {self.name!r} caps changes at {self.max_scale}, "
@@ -155,12 +192,21 @@ class Rule:
             d["irreversible"] = self.irreversible
         if self.reason:
             d["reason"] = self.reason
+        if self.above_scale is not None:
+            d["above_scale"] = self.above_scale
+        if self.only_irreversible:
+            d["only_irreversible"] = True
+        if self.approvers:
+            d["approvers"] = list(self.approvers)
+        if self.allow_requester:
+            d["allow_requester"] = True
         return d
 
     @staticmethod
     def from_dict(d: Mapping[str, Any]) -> "Rule":
         known = {"name", "effect", "agents", "principals", "operations", "targets",
-                 "max_scale", "irreversible", "reason"}
+                 "max_scale", "irreversible", "reason",
+                 "above_scale", "only_irreversible", "approvers", "allow_requester"}
         name = str(d.get("name") or "")
         unknown = sorted(set(d) - known)
         if unknown:
@@ -172,6 +218,9 @@ class Rule:
         reason = d.get("reason", "")
         if not isinstance(reason, str):
             raise PolicyError(f"rule {name!r}: reason must be text")
+        for flag in ("only_irreversible", "allow_requester"):
+            if not isinstance(d.get(flag, False), bool):
+                raise PolicyError(f"rule {name!r}: {flag} must be true or false")
         return Rule(
             name=name, effect=str(d.get("effect") or ""),
             agents=_strings(d.get("agents"), "agents", name),
@@ -179,6 +228,9 @@ class Rule:
             operations=_strings(d.get("operations"), "operations", name),
             targets=_strings(d.get("targets"), "targets", name),
             max_scale=d.get("max_scale"), irreversible=irreversible, reason=reason,
+            above_scale=d.get("above_scale"), only_irreversible=d.get("only_irreversible", False),
+            approvers=_strings(d.get("approvers"), "approvers", name),
+            allow_requester=d.get("allow_requester", False),
         )
 
 
@@ -205,9 +257,17 @@ class Policy:
     def __bool__(self) -> bool:
         return bool(self.rules)
 
+    def rule(self, name: str) -> Rule | None:
+        """The rule called ``name``, or None."""
+        return next((r for r in self.rules if r.name == name), None)
+
     def evaluate(self, operation: str, resource: str, scale: int = 1, irreversible: bool = False,
                  principal: str = "", holders: Iterable[str] = ()) -> list[Finding]:
-        """Every rule this action breaks (empty when none)."""
+        """Every rule this action breaks (empty when none).
+
+        An approve rule that applies shows up as a failing finding with
+        ``check="approval"``: broken until a person says yes.
+        """
         holders = tuple(holders)
         findings = []
         for rule in self.rules:

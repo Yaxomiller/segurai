@@ -11,6 +11,7 @@ The tables:
     warrants    - one row per delegation hop (parent_id links them into a tree)
     actions     - one row per thing an agent did, with the admission verdict
     verdicts    - the Tier 2 judge's view of flagged actions
+    approvals   - requests the gateway is holding for a person's yes (approvals.py)
     ledger      - the tamper-evident hash chain over all of the above
     checkpoints - signed statements of what the chain looked like at a moment
 
@@ -219,6 +220,37 @@ CREATE TABLE IF NOT EXISTS state (
     value           TEXT NOT NULL
 );
 
+-- Requests the gateway is holding until a person approves them (approvals.py),
+-- with exactly what will be sent, who may decide, and what happened. In the
+-- tamper-evident log: who approved what is evidence.
+CREATE TABLE IF NOT EXISTS approvals (
+    approval_id    TEXT PRIMARY KEY,
+    action_id      TEXT NOT NULL,
+    session_id     TEXT NOT NULL,
+    principal      TEXT NOT NULL,
+    actor          TEXT NOT NULL,
+    upstream       TEXT NOT NULL,
+    method         TEXT NOT NULL,
+    path           TEXT NOT NULL,
+    query          TEXT NOT NULL,
+    headers_json   TEXT NOT NULL,
+    body           BLOB,
+    body_sha256    TEXT NOT NULL,
+    needs_json     TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    decided_by     TEXT,
+    decided_at     TEXT,
+    note           TEXT,
+    finished_at    TEXT,
+    result_status  INTEGER,
+    result_json    TEXT,
+    error          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state);
+CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id);
+
 -- Every version of the organisation's rules that was ever in force (policy.py).
 -- Findings name the version, so an audit can show exactly which rules applied.
 CREATE TABLE IF NOT EXISTS policies (
@@ -237,6 +269,7 @@ _LOGGED_TABLES = {
     "policy": ("policies", "version"),
     "user": ("users", "email"),
     "access": ("access_log", "access_id"),
+    "approval": ("approvals", "approval_id"),
 }
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -777,6 +810,10 @@ class Store:
         rows = self._read("SELECT * FROM actions WHERE session_id = ? ORDER BY at, rowid", (session_id,))
         return [_row_to_action(r) for r in rows]
 
+    def get_action(self, action_id: str) -> ActionRecord | None:
+        rows = self._read("SELECT * FROM actions WHERE action_id = ?", (action_id,))
+        return _row_to_action(rows[0]) if rows else None
+
     def violations(self, session_id: str | None = None) -> list[ActionRecord]:
         if session_id:
             rows = self._read(
@@ -943,6 +980,55 @@ class Store:
                  "created_at": r["created_at"], "attempts": r["attempts"], "sent_at": r["sent_at"],
                  "failed_at": r["failed_at"], "last_error": r["last_error"],
                  "headline": json.loads(r["body_json"]).get("headline", "")} for r in rows]
+
+    # ---- approvals (approvals.py) -------------------------------------------
+
+    def put_approval(self, row: dict[str, Any]) -> None:
+        """Store a new held request. ``row`` holds every column (approvals.Approval.to_row())."""
+        self._write_row("approvals", row, kind="approval", ref_id=row["approval_id"])
+
+    def get_approval(self, approval_id: str) -> dict[str, Any] | None:
+        rows = self._read("SELECT * FROM approvals WHERE approval_id = ?", (approval_id,))
+        return dict(rows[0]) if rows else None
+
+    def approvals(self, *, states: tuple[str, ...] = (), session_id: str | None = None,
+                  limit: int = 200) -> list[dict[str, Any]]:
+        """Held requests, newest first, optionally only in some states or for one session."""
+        where, params = [], []
+        if states:
+            where.append(f"state IN ({', '.join('?' for _ in states)})")
+            params += list(states)
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = self._read(f"SELECT * FROM approvals{clause} ORDER BY created_at DESC LIMIT ?",
+                          (*params, max(1, min(limit, 1000))))
+        return [dict(r) for r in rows]
+
+    def transition_approval(self, approval_id: str, from_states: tuple[str, ...],
+                            changes: dict[str, Any], *, unexpired_at: str | None = None) -> dict[str, Any] | None:
+        """Change a held request only if it is still in one of ``from_states``.
+
+        A compare-and-set: the read and the write happen under the log's lock,
+        so of two servers (or two people) acting on the same request at once,
+        exactly one wins - one approval, one execution. ``unexpired_at`` (an
+        ISO time) also requires the request not to have expired by then.
+        Returns the new row, or None when the request was not in that state.
+        """
+        with self._tx():
+            self._db.lock_ledger()
+            rows = self._db.execute("SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)).fetchall()
+            if not rows:
+                return None
+            row = {k: v for k, v in dict(rows[0]).items() if k not in HIDDEN_COLUMNS}
+            if row["state"] not in from_states:
+                return None
+            if unexpired_at is not None and row["expires_at"] <= unexpired_at:
+                return None
+            row.update(changes)
+            self._write_row("approvals", row, kind="approval", ref_id=approval_id)
+            return row
 
     # ---- organisation rules ---------------------------------------------
 
