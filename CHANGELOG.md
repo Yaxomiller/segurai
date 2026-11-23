@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **Triggers: jobs nobody types start sessions with a scope registered in advance** (`[[issuer.triggers]]`).
+  - A nightly clean-up, a webhook or a queue consumer sends `POST /v1/sessions {"trigger": "...", "request": "..."}` with its own token from its platform (a Kubernetes service account, a CI system, a cloud's workload identity). The token's issuer is trusted with `kind = "workloads"`.
+  - The token's subject must match the trigger's `subjects`. The root's scope is the one registered with the trigger, so there is no model call and nothing decided at run time. The session names the trigger's `owner`, the person accountable for the job, beside the job's proven identity.
+  - A job's token can never start a person's session, and a person's sign-in can never fire a trigger.
+- **The intent compiler caches contracts** by who asked and what they asked (ignoring case, spacing and final punctuation), for 24 hours by default (`cache_ttl`). The same person asking the same thing again costs no model call, and the session's contract says it was cached. The CLI's `intent` and `eval-intent` never use the cache.
+- **Revocation: stop a request now** (`segurai revoke <session> --reason ... --by ...`, or *Revoke this request* on its dashboard page, for an admin or the person who made it).
+  - The gateway refuses everything further under it, in observe mode too, and records each attempt. No new direct token is handed out under it. Requests waiting for approval are denied, and an approved one not yet sent is never sent.
+  - One warrant can be revoked instead (`--warrant`): it and every hop delegated from it stop, and their siblings carry on.
+  - Who revoked it, when and why are in the tamper-evident log and the evidence pack. A direct token already handed out can't be called back; it expires on its own.
 - **The gateway gets credentials from the company's secrets manager instead of keeping copies** ([`credentials.py`](src/segurai/credentials.py)).
   - `[gateway.upstreams.credentials]` fills headers from a secret's fields (`Authorization = "Bearer {api_key}"`), read from HashiCorp Vault (KV or any dynamic secrets engine), AWS Secrets Manager (`segurai[aws]`), GCP Secret Manager, or the environment. Or it exchanges a client secret for a short-lived OAuth2 access token (`type = "oauth2"`).
   - The gateway proves who it is with the platform's workload identity: a Kubernetes service account token for Vault, the instance or task role on AWS, the metadata server on GCP. With those it holds no long-lived secret at all.
@@ -37,6 +46,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- A held request's new state and its action's record are now written in one transaction. For a moment the dashboard could show a request as sent while its action still read "held" (seen once in CI).
 - The stage server answered some refused requests before reading them, which on Windows could reset the connection before the browser saw the refusal.
 
 ## [0.4.0] — 2026-11-10

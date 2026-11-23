@@ -292,12 +292,13 @@ def decide(store: Store, approval_id: str, *, email: str, is_admin: bool, approv
     note = (note or "").strip()[:1000]
     changes = {"state": "approved" if approve else "denied", "decided_by": email.strip().lower(),
                "decided_at": now.isoformat(), "note": note or None}
-    row = store.transition_approval(approval_id, ("pending",), changes, unexpired_at=now.isoformat())
-    if row is None:
-        raise ApprovalError("someone else decided this request a moment ago, or it just expired")
-    decided = Approval.from_row(row)
-    if not approve:
-        amend_action(store, decided)
+    with store._tx():                     # the decision and the action's record change together
+        row = store.transition_approval(approval_id, ("pending",), changes, unexpired_at=now.isoformat())
+        if row is None:
+            raise ApprovalError("someone else decided this request a moment ago, or it just expired")
+        decided = Approval.from_row(row)
+        if not approve:
+            amend_action(store, decided)
     return decided
 
 
@@ -308,12 +309,13 @@ def expire_due(store: Store, now: datetime | None = None) -> list[Approval]:
     for row in store.approvals(states=("pending",), limit=1000):
         if row["expires_at"] > now.isoformat():
             continue
-        changed = store.transition_approval(row["approval_id"], ("pending",),
-                                            {"state": "expired", "finished_at": now.isoformat()})
-        if changed is not None:
-            approval = Approval.from_row(changed)
-            amend_action(store, approval)
-            moved.append(approval)
+        with store._tx():
+            changed = store.transition_approval(row["approval_id"], ("pending",),
+                                                {"state": "expired", "finished_at": now.isoformat()})
+            if changed is not None:
+                approval = Approval.from_row(changed)
+                amend_action(store, approval)
+                moved.append(approval)
     return moved
 
 

@@ -92,10 +92,17 @@ class TrustedIssuer:
     allowed_domains: tuple[str, ...] = ()         # empty = any domain
     algorithms: tuple[str, ...] = ASYMMETRIC_ALGORITHMS
     leeway_seconds: int = 60
+    #: "people": a company login system (tokens name a person). "workloads":
+    #: a platform that signs tokens for jobs and services - Kubernetes, a CI
+    #: system, a cloud's workload identity - accepted only to start registered
+    #: triggers (issuer.py), never as a person.
+    kind: str = "people"
 
     def __post_init__(self) -> None:
         if not self.issuer:
             raise ValueError("a trusted issuer needs its issuer URL")
+        if self.kind not in ("people", "workloads"):
+            raise ValueError(f"issuer {self.issuer}: kind must be people or workloads")
         if not self.audience:
             raise ValueError(f"issuer {self.issuer}: an audience (client id) is required")
         bad = sorted(set(self.algorithms) - set(ASYMMETRIC_ALGORITHMS))
@@ -293,4 +300,5 @@ class IdentityVerifier:
             verified_at=utcnow(),
             expires_at=datetime.fromtimestamp(exp, tz=timezone.utc) if isinstance(exp, (int, float)) else None,
             token_id=str(claims["jti"]) if claims.get("jti") else None,
+            method="oidc" if issuer.kind == "people" else "workload",
         )

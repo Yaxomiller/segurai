@@ -346,6 +346,8 @@ def _explain(f: Finding, a: ActionRecord) -> str:
         return f"It broke a condition of the request: <strong>{_e(f.clause or f.reason)}</strong>."
     if f.check == "spec":
         return "The tool call couldn't be described, so nobody could have authorized it."
+    if f.check == "revoked":
+        return f"It came after the request was <strong>revoked</strong>: {_e(f.reason)}."
     if f.check == "approval":
         if f.status == "approved":
             return f"It was held for a person's approval, and <strong class='ok'>approved</strong>: {_e(f.reason)}."
@@ -652,7 +654,32 @@ def _story_html(actions: list[ActionRecord], verdicts: dict) -> str:
     return "".join(cards)
 
 
-def session_page(store: Store, session_id: str, verifier: Authority | None = None) -> str | None:
+def _revocation_html(store: Store, sess: Any, csrf: str) -> str:
+    """Who stopped this request, or - for those allowed - the button to stop it."""
+    revocations = store.revocations_for_session(sess.session_id)
+    whole = [r for r in revocations if r["warrant_id"] is None]
+    out = "".join(
+        f"<div class='card story blocked'><div class='big blocked'>&#x26D4; "
+        f"{'Revoked' if r['warrant_id'] is None else 'One agent revoked'}</div>"
+        f"<p>by <strong>{_e(r['revoked_by'])}</strong> at <span class='mono'>{_e(r['at'][:19])}</span>"
+        + (f" &middot; warrant <span class='mono'>{_e(r['warrant_id'])}</span> and every hop below it"
+           if r["warrant_id"] else "")
+        + f": &ldquo;{_e(r['reason'])}&rdquo;. The gateway refuses anything further under it.</p></div>"
+        for r in revocations)
+    viewer = current_viewer.get()
+    if not whole and viewer is not None and csrf and (viewer.user.can("admin")
+                                                      or viewer.user.email.lower() == sess.principal.lower()):
+        out += (f"<form class='decide' method='post' action='{_link(sess.session_id)}/revoke'>"
+                f"<input type='hidden' name='csrf' value='{_e(csrf)}'>"
+                "<input name='reason' required maxlength='1000' placeholder='why stop it? (kept with the record)'>"
+                "<button class='deny' type='submit'>Revoke this request</button></form>"
+                "<p class='muted small'>Stops every agent under this request at the gateway, now, and denies "
+                "anything waiting for approval.</p>")
+    return out
+
+
+def session_page(store: Store, session_id: str, verifier: Authority | None = None, *,
+                 csrf: str = "", message: str = "", error: str = "") -> str | None:
     """One session's page, or None when there is no such session."""
     sess = store.get_session(session_id)
     if sess is None:
@@ -731,6 +758,9 @@ def session_page(store: Store, session_id: str, verifier: Authority | None = Non
             + (f"<p class='small'><a href='{_link(session_id)}/evidence.zip'>Download the evidence pack</a> "
                "<span class='muted'>&middot; a file an auditor can check on its own</span></p>"
                if _can("auditor") and current_viewer.get() is not None else "")
+            + (f"<div class='error'>{_e(error)}</div>" if error else "")
+            + (f"<p class='ok'>{_e(message)}</p>" if message else "")
+            + _revocation_html(store, sess, csrf)
             + f"{warning}{_story_html(actions, verdicts)}"
             f"<div class='grid'><div>{''.join(left)}</div><div>{right}</div></div>")
     return _page(f"Segurai - {sess.request}", body, store=store, verifier=verifier,

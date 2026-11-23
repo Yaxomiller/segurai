@@ -13,6 +13,7 @@ The tables:
     verdicts    - the Tier 2 judge's view of flagged actions
     approvals   - requests the gateway is holding for a person's yes (approvals.py)
     grants      - short-lived credentials handed to agents for direct use (the fast path)
+    revocations - requests (or single warrants) a person stopped before they expired
     ledger      - the tamper-evident hash chain over all of the above
     checkpoints - signed statements of what the chain looked like at a moment
 
@@ -270,6 +271,19 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 CREATE INDEX IF NOT EXISTS idx_grants_session ON grants(session_id);
 
+-- Requests, or single warrants, a person stopped (revocation.py). A NULL
+-- warrant_id means the whole request.
+CREATE TABLE IF NOT EXISTS revocations (
+    revocation_id  TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    warrant_id     TEXT,
+    revoked_by     TEXT NOT NULL,
+    reason         TEXT NOT NULL,
+    at             TEXT NOT NULL,
+    how            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revocations_session ON revocations(session_id);
+
 -- Every version of the organisation's rules that was ever in force (policy.py).
 -- Findings name the version, so an audit can show exactly which rules applied.
 CREATE TABLE IF NOT EXISTS policies (
@@ -290,6 +304,7 @@ _LOGGED_TABLES = {
     "access": ("access_log", "access_id"),
     "approval": ("approvals", "approval_id"),
     "grant": ("grants", "grant_id"),
+    "revocation": ("revocations", "revocation_id"),
 }
 
 #: Columns added after the first release, as (table, column, SQL type). A
@@ -1059,6 +1074,23 @@ class Store:
         rows = self._read("SELECT * FROM grants WHERE session_id = ? ORDER BY issued_at", (session_id,))
         return [{**dict(r), "operations": json.loads(r["operations_json"]),
                  "excluded": json.loads(r["excluded_json"])} for r in rows]
+
+    # ---- revocations (revocation.py) ---------------------------------------
+
+    def put_revocation(self, row: dict[str, Any]) -> None:
+        self._write_row("revocations", row, kind="revocation", ref_id=row["revocation_id"])
+
+    def revocations_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        rows = self._read("SELECT * FROM revocations WHERE session_id = ? ORDER BY at", (session_id,))
+        return [dict(r) for r in rows]
+
+    def revocation_for(self, session_id: str, warrant_ids: list[str]) -> dict[str, Any] | None:
+        """The earliest revocation of this request, or of any of these warrants; None if none."""
+        ids = [w for w in warrant_ids if w]
+        clause = f" OR warrant_id IN ({', '.join('?' for _ in ids)})" if ids else ""
+        rows = self._read(f"SELECT * FROM revocations WHERE session_id = ? AND (warrant_id IS NULL{clause}) "
+                          f"ORDER BY at LIMIT 1", (session_id, *ids))
+        return dict(rows[0]) if rows else None
 
     # ---- organisation rules ---------------------------------------------
 

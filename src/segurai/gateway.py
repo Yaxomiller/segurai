@@ -94,6 +94,7 @@ from .context import CHAIN_TOKEN_PREFIX, export_chain, import_chain
 from .credentials import CredentialError
 from .models import NON_MUTATING, ActionRecord, Finding, Warrant, utcnow
 from .policy import Policy
+from .revocation import revocation_for
 
 __all__ = ["Route", "Upstream", "DirectAccess", "GatewayConfig", "GatewayServer", "GatewayClient", "ApprovalRunner",
            "proof_headers", "CHAIN_HEADER", "PROOF_HEADER", "APPROVAL_HEADER", "GatewayConfigError",
@@ -476,16 +477,21 @@ class ApprovalRunner:
         error = None if upstream is not None else f"the gateway no longer has an upstream called {approval.upstream}"
         record = store.get_action(approval.action_id)
         if error is None and record is not None:
-            # The organisation's rules may have changed while it waited.
+            # The organisation's rules may have changed while it waited, and the
+            # request may have been revoked.
             try:
-                holders = [w.holder for w in store.chain_to(record.warrant_id)]
+                chain = store.chain_to(record.warrant_id)
             except ValueError:
-                holders = [record.actor]
+                chain = []
+            holders = [w.holder for w in chain] or [record.actor]
+            revoked = revocation_for(store, chain)
+            if revoked is not None:
+                error = f"the request was revoked by {revoked['revoked_by']}"
             hard = [f for f in server.policy.evaluate(record.operation, record.resource, record.scale,
                                                       record.irreversible, principal=approval.principal,
                                                       holders=holders)
                     if f.status == "fail" and f.check != "approval"]
-            if hard:
+            if hard and error is None:
                 error = "the organisation's rules changed while it waited: " + "; ".join(f.reason for f in hard)
         changes: dict[str, Any] = {"finished_at": utcnow().isoformat()}
         if error is None:
@@ -506,9 +512,12 @@ class ApprovalRunner:
                 changes.update(state="done", result_status=status, result_json=json.dumps(result, sort_keys=True))
         if error is not None:
             changes.update(state="failed", error=error[:500])
-        row = store.transition_approval(approval.approval_id, ("running",), changes)
-        if row is not None:
-            amend_action(store, Approval.from_row(row))
+        # The request's new state and its action's record change together, so
+        # nobody ever sees one without the other.
+        with store._tx():
+            row = store.transition_approval(approval.approval_id, ("running",), changes)
+            if row is not None:
+                amend_action(store, Approval.from_row(row))
 
     def start(self) -> "ApprovalRunner":
         with self._lock:
@@ -841,6 +850,9 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         upstream = next((u for u in self.server.config.upstreams if u.name == name), None)
         if upstream is None or upstream.direct is None:
             raise _Refusal(404, f"{name!r} offers no direct access; send requests through the gateway")
+        revoked = revocation_for(self.server.store, chain)
+        if revoked is not None:
+            raise _Refusal(403, f"{revoked['revoked_by']} revoked this request: {revoked['reason']}")
         granted, excluded = self.server.direct_operations(upstream, chain)
         if not granted:
             self._reply(403, {"error": "nothing this request may do can be done directly; send requests "
@@ -921,8 +933,14 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             evidence = {}
             findings = [Finding("spec", "fail", str(exc), "every gateway request must match a route")]
 
+        # A person's explicit "stop" outranks everything, in either mode.
+        revoked = revocation_for(self.server.store, chain)
+        if revoked is not None:
+            findings = [*findings, Finding("revoked", "fail",
+                                           f"{revoked['revoked_by']} revoked this request: {revoked['reason']}",
+                                           f"revocation {revoked['revocation_id']}")]
         failures = [f for f in findings if f.status == "fail"]
-        enforce = self.server.config.mode == "enforce"
+        enforce = self.server.config.mode == "enforce" or revoked is not None
         hold = None
         if failures and enforce:
             hold = self.server.holds_for(failures, leaf, operation=operation, resource=resource, scale=scale,

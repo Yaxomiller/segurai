@@ -167,6 +167,7 @@ The model's output is treated as untrusted. It can only ever *narrow* the person
 - **Fail closed** — if the work changes records but no scale is given, the limit becomes 1, so any bigger change is flagged for a person.
 - **Checks** — catalog resources can list *evidence*, such as `days_since_activity`. When a condition can be tested with listed evidence, the compiler writes a Check for it. A check that relies on evidence the catalog doesn't list is dropped, but its condition stays as text, so nothing the person meant is lost.
 - **Model** — Claude Opus 5. The instructions and catalog are marked for prompt caching (identical bytes on every call), and server-side refusal fallbacks are on.
+- **Cache** — compiled contracts are kept in memory by (who asked, the request ignoring case, spacing and final punctuation) for `cache_ttl` (24 hours by default). The same person asking the same thing again costs no model call, and the saved contract is marked `cached`. Jobs started by triggers never compile anything.
 - **Measuring it** — [`evals/intent/`](../evals/intent/README.md) holds 50 labeled requests; `segurai eval-intent` grades the compiler field by field against the M1 target of 80% acceptable.
 
 ---
@@ -336,6 +337,13 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 - It checks the token: signature against the published keys, asymmetric algorithms only, issuer, audience, expiry and email domain.
 - It mints a root warrant inside the first matching **ceiling**: the most that group can ever be granted.
 - The session records how the person was proven, and every page shows "identity verified" or "claimed".
+- **Triggers** start sessions for jobs nobody types. A job sends its own platform token (from a trusted issuer of `kind = "workloads"`) with the trigger's name. Its subject must match the trigger's `subjects`, and the root gets the scope registered with the trigger: no model call, nothing decided at run time. The session's principal is the trigger's `owner`, the accountable person, with the job's identity beside it. Workload tokens can't start people's sessions, and people can't fire triggers.
+
+**Revocation** ([`revocation.py`](../src/segurai/revocation.py)). A person can stop a request, or one warrant and everything delegated from it, before it expires.
+
+- The gateway checks every chain against the `revocations` table and refuses (and records) anything under a revoked warrant, even in observe mode.
+- No direct token is issued under it. Pending approvals are denied and approved-but-unsent ones fail, each in one transaction with its action's record.
+- What it can't reach: a direct token already handed out (it expires on its own), and an agent acting without the gateway.
 
 **The gateway** ([`gateway.py`](../src/segurai/gateway.py)).
 
@@ -410,6 +418,7 @@ src/segurai/
   policy.py            company rules: deny, limit and approve, versioned
   approvals.py         step-up approvals: held requests, who may decide, deciding, expiry
   credentials.py       the gateway's credentials: Vault, AWS, GCP, env, OAuth2 tokens
+  revocation.py        stopping a request, or one warrant, before it expires
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -477,6 +486,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_step3.py` | triggers fire only for the job they name, with their registered scope, and never for a person; the intent cache saves model calls per person and request; revocation stops a request (or one warrant and what it delegated) at the gateway in either mode, denies what waits for approval, and works from the dashboard and the CLI |
 | `test_credentials.py` | Vault (Kubernetes and AppRole logins, KV v2, dynamic leases, lapsed logins, outages), AWS and GCP secret managers, OAuth2 tokens; a rotated key picked up after a 401; secrets never in errors or records; the fast path carries only what no check could stop and never outlives its warrant |
 | `test_approvals.py` | a held request never reaches the system before a decision; approved, the exact bytes are sent once, even with several runners; the requester can't approve their own; denial, expiry, changed rules; step-up never reaches past the ceiling, a rule or an unproven person; the dashboard's buttons, alerts and evidence packs |
 | `test_policy.py`, `test_alerts.py`, `test_witness.py`, `test_evidence.py` | company rules beat grants; alerts are queued once, retried, and sent by exactly one server; witnessed checkpoints catch a key-holder's rewrite; evidence packs verify alone and reveal tampering |

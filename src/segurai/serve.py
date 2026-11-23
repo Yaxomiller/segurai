@@ -110,7 +110,8 @@ def build(config: Config, *, any_port: bool = False) -> Deployment:
         from .issuer import Issuer
 
         issuer = Issuer(authority, store, IdentityVerifier(config.issuer.trusted), config.issuer.ceilings,
-                        default_ttl=config.issuer.default_ttl, max_ttl=config.issuer.max_ttl)
+                        default_ttl=config.issuer.default_ttl, max_ttl=config.issuer.max_ttl,
+                        triggers=config.issuer.triggers)
 
     witness_files = [str(w.path) for w in config.witnesses if isinstance(w, FileWitness)]
     server = CollectorServer((s.host, 0 if any_port else s.port), store, verifier=verifier, auth=auth, issuer=issuer,

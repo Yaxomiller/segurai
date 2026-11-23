@@ -130,6 +130,7 @@ class DashboardConfig:
 class IssuerConfig:
     trusted: list = field(default_factory=list)       # identity.TrustedIssuer
     ceilings: list = field(default_factory=list)      # issuer.Ceiling
+    triggers: list = field(default_factory=list)      # issuer.Trigger
     default_ttl: timedelta = timedelta(hours=1)
     max_ttl: timedelta = timedelta(hours=8)
 
@@ -271,7 +272,7 @@ def _dashboard(t: _Table, server: ServerConfig) -> DashboardConfig:
 
 def _issuer(t: _Table) -> IssuerConfig:
     from .identity import TrustedIssuer
-    from .issuer import Ceiling
+    from .issuer import Ceiling, Trigger
 
     config = IssuerConfig(default_ttl=timedelta(minutes=t.get("default_ttl_minutes", int, 60)),
                           max_ttl=timedelta(minutes=t.get("max_ttl_minutes", int, 480)))
@@ -280,9 +281,11 @@ def _issuer(t: _Table) -> IssuerConfig:
     for tt in t.tables("trusted"):
         try:
             audience = tt.get("audience", (str, list))
+            kind = tt.get("kind", str, "people")
             config.trusted.append(TrustedIssuer(
                 issuer=tt.get("issuer", str), audience=tuple(audience) if isinstance(audience, list) else audience,
-                jwks_url=tt.get("jwks_url", str, None), principal_claim=tt.get("principal_claim", str, "email"),
+                kind=kind, jwks_url=tt.get("jwks_url", str, None),
+                principal_claim=tt.get("principal_claim", str, "email" if kind == "people" else "sub"),
                 groups_claim=tt.get("groups_claim", str, "groups"),
                 require_verified_email=tt.get("require_verified_email", bool, True),
                 allowed_domains=tt.strings("allowed_domains")))
@@ -294,10 +297,26 @@ def _issuer(t: _Table) -> IssuerConfig:
         principals, groups = ct.strings("principals"), ct.strings("groups")
         config.ceilings.append(Ceiling(name=name, principals=principals, groups=groups, scope=_scope(ct)))
         ct.done()
+    for tt in t.tables("triggers"):
+        try:
+            config.triggers.append(Trigger(
+                name=tt.get("name", str), owner=tt.get("owner", str).strip().lower(),
+                subjects=tt.strings("subjects"), issuers=tt.strings("issuers"),
+                ttl=timedelta(minutes=tt.get("ttl_minutes", int, 60)), scope=_scope(tt)))
+        except ValueError as exc:
+            raise ConfigError(f"{tt.where}: {exc}") from exc
+        tt.done()
+    names = [tr.name for tr in config.triggers]
+    if len(set(names)) != len(names):
+        raise ConfigError("issuer.triggers: names must be unique")
     if not config.trusted:
         raise ConfigError("issuer: at least one [[issuer.trusted]] login system is required")
-    if not config.ceilings:
-        raise ConfigError("issuer: at least one [[issuer.ceilings]] is required; without one nobody gets anything")
+    if not config.ceilings and not config.triggers:
+        raise ConfigError("issuer: at least one [[issuer.ceilings]] (or trigger) is required; without one "
+                          "nobody gets anything")
+    if config.triggers and not any(tr.kind == "workloads" for tr in config.trusted):
+        raise ConfigError("issuer.triggers are fired by jobs: add an [[issuer.trusted]] with kind = \"workloads\" "
+                          "(the platform that signs the jobs' tokens)")
     t.done()
     return config
 
@@ -584,6 +603,17 @@ session_hours = 12
 # issuer = "https://login.acme.example"
 # audience = "segurai-agents"
 # allowed_domains = ["acme.example"]
+# [[issuer.trusted]]                    # the platform that signs jobs' tokens (Kubernetes, CI, cloud)
+# issuer = "https://kubernetes.default.svc"
+# audience = "segurai"
+# kind = "workloads"
+# [[issuer.triggers]]                   # a job that starts sessions itself, with a scope registered here
+# name = "nightly-crm-hygiene"
+# owner = "ops-lead@acme.example"       # the person accountable for it
+# subjects = ["system:serviceaccount:jobs:crm-hygiene"]
+# operations = ["search", "archive"]
+# targets = ["crm.deals"]
+# max_scale = 50
 # [[issuer.ceilings]]                   # the most a group can ever be granted
 # name = "sales"
 # groups = ["sales"]

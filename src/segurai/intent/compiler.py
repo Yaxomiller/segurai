@@ -28,7 +28,11 @@ by default and can be switched off.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -133,6 +137,9 @@ class CompiledIntent:
     contract: ScopeContract
     problems: tuple[str, ...] = ()
     model: str | None = None
+    #: True when this came from the cache: the same person asked the same thing
+    #: recently, so no model was called.
+    cached: bool = False
 
     def scope(self, ceiling: Scope | None = None) -> Scope:
         """The root scope, clamped inside ``ceiling`` when one is given."""
@@ -141,38 +148,82 @@ class CompiledIntent:
 
     def to_record(self) -> dict[str, Any]:
         """What gets saved with the session, for auditors and later tiers."""
-        return {
+        record = {
             "contract": self.contract.to_dict(),
             "problems": list(self.problems),
             "model": self.model,
             "prompt_version": PROMPT_VERSION,
         }
+        if self.cached:
+            record["cached"] = True
+        return record
+
+
+def normalize_request(request: str) -> str:
+    """What makes two requests "the same" for the cache: case, spacing and end punctuation aside."""
+    return " ".join(request.casefold().split()).rstrip(" .!?")
 
 
 class IntentCompiler:
-    """Compiles requests against one organisation's catalog."""
+    """Compiles requests against one organisation's catalog.
 
-    def __init__(self, catalog: Catalog, backend: IntentBackend | None = None):
+    Compiled contracts are cached by (who asked, the request with case,
+    spacing and final punctuation ignored) for ``cache_ttl``: the same person
+    asking the same thing again - the morning report, the weekly clean-up -
+    costs no model call. The key includes the person because a contract is
+    later clamped to what THEY may do, and because the cache must never let
+    one person's wording stand in for another's. ``cache_ttl=None`` turns it
+    off. The cache lives in this process only.
+    """
+
+    def __init__(self, catalog: Catalog, backend: IntentBackend | None = None, *,
+                 cache_ttl: timedelta | None = timedelta(hours=24), cache_size: int = 1000):
         self.catalog = catalog
         self.backend = backend if backend is not None else ClaudeBackend()
         # Built once: the same bytes on every call is what lets it be cached.
         self._system = build_system_prompt(catalog)
+        self.cache_ttl = cache_ttl
+        self.cache_size = cache_size
+        self._cache: OrderedDict[tuple[str, str], tuple[float, CompiledIntent]] = OrderedDict()
+        self._lock = threading.Lock()
+        self.hits = self.misses = 0
 
     @property
     def system_prompt(self) -> str:
         return self._system
 
-    def compile(self, request: str) -> CompiledIntent:
+    def compile(self, request: str, principal: str | None = None) -> CompiledIntent:
         if not request or not request.strip():
             raise IntentError("the request is empty")
+        key = ((principal or "").strip().lower(), normalize_request(request))
+        if self.cache_ttl is not None:
+            with self._lock:
+                entry = self._cache.get(key)
+                if entry is not None and time.monotonic() - entry[0] < self.cache_ttl.total_seconds():
+                    self._cache.move_to_end(key)
+                    self.hits += 1
+                    return replace(entry[1], request=request, cached=True)
+                self.misses += 1
         raw = self.backend.complete(self._system, request, self.catalog)
         try:
             contract = ScopeContract.from_dict(raw)
         except (KeyError, TypeError, ValueError) as exc:
             raise IntentError(f"the model's contract was malformed: {exc}") from exc
         checked, problems = contract.checked_against(self.catalog)
-        return CompiledIntent(request=request, contract=checked, problems=tuple(problems),
-                              model=getattr(self.backend, "last_model", None))
+        compiled = CompiledIntent(request=request, contract=checked, problems=tuple(problems),
+                                  model=getattr(self.backend, "last_model", None))
+        if self.cache_ttl is not None:
+            with self._lock:
+                self._cache[key] = (time.monotonic(), compiled)
+                self._cache.move_to_end(key)
+                while len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
+        return compiled
+
+    def forget(self) -> None:
+        """Empty the cache (for example after the catalog's meaning changed)."""
+        with self._lock:
+            self._cache.clear()
 
 
 @lru_cache(maxsize=32)

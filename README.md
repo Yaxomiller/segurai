@@ -414,6 +414,10 @@ POST /v1/sessions        Authorization: Bearer <ID token>        {"request": "Ar
 
 The issuer checks the token's signature against the login system's published keys, its issuer, audience, expiry and email domain. It then mints a root warrant inside the first **ceiling** that matches the person's groups. A ceiling is the most anyone in that group can ever be granted, so no request can ask for more. The response is a chain token that the agent continues with `segurai.resume`.
 
+Jobs nobody types (a nightly clean-up, a webhook) start sessions through **triggers** registered in `segurai.toml`. They send `{"trigger": "nightly-crm-hygiene", "request": "..."}` with their own platform token (a Kubernetes service account, CI or cloud workload identity). The scope is the one registered with the trigger, so there is no model call, and the session names the person accountable for the job.
+
+To stop a request before its warrants expire, use `segurai revoke <session> --reason "..." --by you@acme.example`, or the button on its dashboard page. The gateway refuses everything further under it, and anything waiting for approval is denied.
+
 ## Company rules
 
 ```toml
@@ -456,6 +460,7 @@ segurai users add|list|set    # people who can sign in to the dashboard
 segurai sessions              # list recent sessions
 segurai show <session_id>     # render the delegation tree (--json, --ascii)
 segurai verify <session_id>   # re-check every signature, link and narrowing
+segurai revoke <session_id>   # stop a request's agents at the gateway, now (--reason, --by, --warrant)
 segurai creep <session_id>    # granted vs exercised scope
 segurai report --days 30      # scope-creep report across sessions
 segurai audit                 # check the tamper-evident log (--witness FILE)

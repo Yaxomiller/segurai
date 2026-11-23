@@ -328,7 +328,7 @@ def session(
                 "session() needs a scope, or an intent compiler to derive one from the request: "
                 "segurai.configure(intent=IntentCompiler(catalog))"
             )
-        compiled = _rt.intent.compile(request)
+        compiled = _rt.intent.compile(request, principal=principal)
         scope = compiled.contract.to_scope()
         if contract is None:
             contract = compiled.to_record()

@@ -68,6 +68,7 @@ DEFAULT_MAX_BODY = 16 * 1024 * 1024
 _MAX_FORM = 64 * 1024
 CSRF_COOKIE = "segurai_csrf"
 _APPROVAL = re.compile(r"^/approvals/(apr_[0-9a-f]{16})$")
+_REVOKE = re.compile(r"^/sessions/([A-Za-z0-9_\-]{1,100})/revoke$")
 
 #: The least role each dashboard page needs.
 _ROLES = (("/access", "auditor"), ("/audit", "auditor"), ("/admin/", "admin"))
@@ -350,7 +351,9 @@ class _Handler(BaseHTTPRequestHandler):
             elif path.startswith("/sessions/") and path.endswith("/evidence.zip"):
                 return self._evidence(unquote(path[len("/sessions/"):-len("/evidence.zip")]))
             elif path.startswith("/sessions/"):
-                page = web.session_page(store, unquote(path[len("/sessions/"):]), verifier)
+                page = web.session_page(store, unquote(path[len("/sessions/"):]), verifier,
+                                        csrf=viewer.csrf if viewer else "", message=query.get("done", ""),
+                                        error=query.get("error", ""))
                 if page is None:
                     self._send(404, b"no such session")
                     return 404
@@ -440,6 +443,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(403, b"cross-site form refused")
                 return
             self._decide(match.group(1))
+        elif self.server.auth is not None and (match := _REVOKE.match(path)) is not None:
+            if not self._same_origin():
+                self._send(403, b"cross-site form refused")
+                return
+            self._revoke(match.group(1))
         else:
             self._send(404, b"not found")
 
@@ -590,6 +598,37 @@ class _Handler(BaseHTTPRequestHandler):
         done = ("Approved. The gateway is sending it now." if decision == "approve"
                 else "Denied. It will never be sent.")
         self._redirect(where + "?" + urlencode({"done": done}))
+
+    def _revoke(self, session_id: str) -> None:
+        """Stop a request: an admin, or the person who made it."""
+        from ..revocation import RevocationError, revoke
+
+        auth = self.server.auth
+        form = self._form()
+        if form is None:
+            return
+        viewer = self._viewer()
+        if viewer is None:
+            self._send(403, b"sign in to revoke")
+            return
+        if not hmac.compare_digest(form.get("csrf", ""), viewer.csrf):
+            self._send(403, b"the form expired; reload the page")
+            return
+        where = f"/sessions/{session_id}"
+        email, ip = viewer.user.email, self._client_ip()
+        session = self.server.store.get_session(session_id)
+        if session is None or not (viewer.user.can("admin") or email.lower() == session.principal.lower()):
+            auth.log(email, "POST", where + "/revoke", 403, ip)
+            self._send(403, b"only an admin, or the person who made the request, can revoke it")
+            return
+        try:
+            revoke(self.server.store, session_id, by=email, reason=form.get("reason", ""), how="dashboard")
+        except RevocationError as exc:
+            auth.log(email, "POST", where + "/revoke", 409, ip)
+            self._redirect(where + "?" + urlencode({"error": str(exc)}))
+            return
+        auth.log(email, "REVOKE", where, 200, ip)
+        self._redirect(where + "?" + urlencode({"done": "Revoked. The gateway refuses anything further under it."}))
 
     def _respond(self, report: IngestReport, content_type: str) -> None:
         """Answer in the encoding the client used, as OTLP/HTTP requires.

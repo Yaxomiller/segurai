@@ -20,6 +20,7 @@
     segurai eval-intent              grade the intent compiler on labeled cases
     segurai eval-tier1               run the Tier 1 scenario suite (no API calls)
     segurai judge <session_id>       Tier 2: judge a session's flagged actions
+    segurai revoke <session_id>      stop a request's agents at the gateway, now
     segurai eval-judge               grade the Tier 2 judge on labeled cases
 
 ``--db`` selects the store, defaulting to ./segurai.db. The signing key is
@@ -292,6 +293,22 @@ def cmd_evidence_verify(args: argparse.Namespace) -> int:
         return 2
     print(report.to_text())
     return 0 if report.ok else 1
+
+
+def cmd_revoke(args: argparse.Namespace) -> int:
+    """Revoke a request, or one warrant in it: the gateway refuses anything further under it."""
+    from .revocation import RevocationError, revoke
+
+    try:
+        row = revoke(_store(args), args.session_id, by=args.by, reason=args.reason,
+                     warrant_id=args.warrant, how="cli")
+    except RevocationError as exc:
+        print(f"Not revoked: {exc}")
+        return 1
+    what = f"warrant {row['warrant_id']} (and every hop below it)" if row["warrant_id"] else "the whole request"
+    print(f"Revoked {what} in {row['session_id']}: {row['revocation_id']}")
+    print(f"  by {row['revoked_by']} (as given on the command line), because: {row['reason']}")
+    return 0
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
@@ -621,8 +638,9 @@ def cmd_backup(args: argparse.Namespace) -> int:
 def _compiler(args: argparse.Namespace):
     from .intent import Catalog, ClaudeBackend, IntentCompiler
 
+    # No cache: these commands measure or show the model's own answer.
     return IntentCompiler(Catalog.load(args.catalog),
-                          ClaudeBackend(model=args.model, effort=args.effort))
+                          ClaudeBackend(model=args.model, effort=args.effort), cache_ttl=None)
 
 
 def cmd_intent(args: argparse.Namespace) -> int:
@@ -849,6 +867,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("session_id")
     s.add_argument("--out", help="where to write the zip (default: <session>-evidence.zip)")
     s.set_defaults(func=cmd_evidence)
+
+    s = sub.add_parser("revoke", help="stop a request's agents at the gateway, now")
+    s.add_argument("session_id")
+    s.add_argument("--reason", required=True, help="why; kept with the revocation")
+    s.add_argument("--by", required=True, help="who is revoking it (your email)")
+    s.add_argument("--warrant", help="revoke only this warrant and the hops below it")
+    s.set_defaults(func=cmd_revoke)
 
     s = sub.add_parser("evidence-verify", help="check an evidence pack from the pack alone")
     s.add_argument("pack")
