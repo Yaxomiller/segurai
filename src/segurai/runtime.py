@@ -458,7 +458,8 @@ def _evaluate(w: Warrant, operation: str, resource: str, scale: int, irreversibl
         # fit both. They only ever take away, so this can add findings but
         # never remove one.
         findings += _rt.policy.evaluate(operation, resource, scale, irreversible,
-                                        principal=w.root_principal, holders=_rt.holders(w))
+                                        principal=w.root_principal, holders=_rt.holders(w),
+                                        evidence=evidence)
     return findings
 
 

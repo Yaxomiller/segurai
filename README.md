@@ -404,6 +404,15 @@ with segurai.resume(chain_token, holder="crm_agent"):
     crm.request("DELETE", "/crm/opportunities/4502")          # 403: never reaches the CRM
 ```
 
+## Templates: known jobs, guardrails included
+
+```bash
+segurai template list                                  # crm-hygiene, refunds
+segurai template init refunds --set billing_url=https://billing.internal --set auto_limit_cents=5000
+```
+
+`init` writes the job's part of `segurai.toml` (routes, rules, ceiling) and a runnable Claude agent whose tools are exactly those routes. For the refunds template that means: refunds up to $50 go through at once, larger ones wait for a person, and none over the maximum is allowed. The agent isn't meant to be the cleverest refund agent there is. It is meant to be one a security team can approve.
+
 ## Across queues
 
 Inside a process the current warrant travels by itself, and across HTTP and MCP it rides along with the call. A queue breaks that, because the message is read later by another service. Hand the work over explicitly:

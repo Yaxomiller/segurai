@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **Governed templates: ready-made agents for known jobs, guardrails included** ([`templates.py`](src/segurai/templates.py)). `segurai template list | show <name> | init <name> --set name=value` writes two files. One is the `segurai.toml` part for the job (gateway routes, company rules, the ceiling for who may use it). The other is a runnable Claude agent whose tools are exactly those routes, called through the gateway. The agent tells the person plainly when something waits for approval or was refused.
+  - `crm-hygiene` finds deals with no activity for `stale_days` and archives them in batches of at most `archive_limit`. A deny rule stops it touching any deal active more recently, and deleting needs a second person.
+  - `refunds` refunds up to `auto_limit_cents` at once. Larger refunds wait for a person, and none above `max_refund_cents` is allowed.
+  - Customers set parameters (addresses, the API's paths, limits, approvers). Nothing is written per customer.
+- **Company rules can depend on what an action reports**: `when_above = { amount_cents = 5000 }` and `when_below = { days_since_activity = 180 }` on deny and approve rules. With a list (one value per record), the rule applies if any record crosses the line. Missing or unreadable evidence counts as crossing it, so a limit can't be dodged by not reporting the amount.
 - **The chain survives a queue** ([`queues.py`](src/segurai/queues.py)). `segurai.queues.handoff("invoice_worker", scope=..., seal_to=WORKER_PUBLIC_KEY)` delegates a hop for the consumer and returns message headers. `with segurai.queues.received(headers, holder="invoice_worker", key=WORKER_PRIVATE_KEY):` takes it up in the other service.
   - The chain is verified against the organisation's public key, so the consumer, and later an auditor, can prove who asked and through whom.
   - The hop's private key travels sealed to the consumer's public key (X25519, HKDF-SHA256, ChaCha20-Poly1305, bound to the warrant id). Anyone else who reads the queue sees the chain but can't act on it. A message read after its hop expired is refused.

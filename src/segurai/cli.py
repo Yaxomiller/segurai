@@ -21,6 +21,7 @@
     segurai eval-tier1               run the Tier 1 scenario suite (no API calls)
     segurai judge <session_id>       Tier 2: judge a session's flagged actions
     segurai revoke <session_id>      stop a request's agents at the gateway, now
+    segurai template list|show|init  ready-made agents for known jobs, guardrails included
     segurai eval-judge               grade the Tier 2 judge on labeled cases
 
 ``--db`` selects the store, defaulting to ./segurai.db. The signing key is
@@ -293,6 +294,49 @@ def cmd_evidence_verify(args: argparse.Namespace) -> int:
         return 2
     print(report.to_text())
     return 0 if report.ok else 1
+
+
+def cmd_template(args: argparse.Namespace) -> int:
+    """Governed templates: list them, show one, or write one's config and agent."""
+    from .templates import TEMPLATES, TemplateError, get
+
+    try:
+        if args.action == "list":
+            for t in TEMPLATES.values():
+                print(f"{t.name:<14} {t.title}")
+            return 0
+        template = get(args.name or "")
+        given = {}
+        for item in args.set or []:
+            key, sep, value = item.partition("=")
+            if not sep:
+                raise TemplateError(f"--set takes name=value, got {item!r}")
+            given[key.strip()] = value
+        if args.action == "show":
+            print(template.title, "", template.summary, "", "Parameters:", sep="\n")
+            for p in template.params:
+                print(f"  {p.name:<22} {p.description} (default: {p.default!r})")
+            print("", "Tools (each one gateway route):", sep="\n")
+            for tool in template.tools:
+                print(f"  {tool.name:<22} {tool.operation} {tool.resource}"
+                      + (" - can't be undone" if tool.irreversible else ""))
+            print("", template.render(given), sep="\n")
+            return 0
+        out = Path(args.out or ".")
+        out.mkdir(parents=True, exist_ok=True)
+        config = out / f"{template.file_stem}.toml"
+        script = out / f"{template.file_stem}_agent.py"
+        for path in (config, script):
+            if path.exists() and not args.force:
+                raise TemplateError(f"{path} exists; pass --force to replace it")
+        config.write_text(template.render(given), encoding="utf-8")
+        script.write_text(template.agent_script(given), encoding="utf-8")
+        print(f"Wrote {config} (append it to segurai.toml) and {script} (the agent).")
+        print("Check the result with: segurai config check --config segurai.toml")
+        return 0
+    except TemplateError as exc:
+        print(f"template: {exc}")
+        return 1
 
 
 def cmd_revoke(args: argparse.Namespace) -> int:
@@ -867,6 +911,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("session_id")
     s.add_argument("--out", help="where to write the zip (default: <session>-evidence.zip)")
     s.set_defaults(func=cmd_evidence)
+
+    s = sub.add_parser("template", help="ready-made agents for known jobs, with their guardrails")
+    s.add_argument("action", choices=["list", "show", "init"])
+    s.add_argument("name", nargs="?")
+    s.add_argument("--set", action="append", metavar="NAME=VALUE", help="a parameter (repeatable)")
+    s.add_argument("--out", help="where init writes its two files (default: here)")
+    s.add_argument("--force", action="store_true", help="replace files that exist")
+    s.set_defaults(func=cmd_template)
 
     s = sub.add_parser("revoke", help="stop a request's agents at the gateway, now")
     s.add_argument("session_id")

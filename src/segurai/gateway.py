@@ -489,7 +489,7 @@ class ApprovalRunner:
                 error = f"the request was revoked by {revoked['revoked_by']}"
             hard = [f for f in server.policy.evaluate(record.operation, record.resource, record.scale,
                                                       record.irreversible, principal=approval.principal,
-                                                      holders=holders)
+                                                      holders=holders, evidence=record.detail)
                     if f.status == "fail" and f.check != "approval"]
             if hard and error is None:
                 error = "the organisation's rules changed while it waited: " + "; ".join(f.reason for f in hard)
@@ -926,7 +926,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                                            evidence=evidence, changed_so_far=changed)
             findings += self.server.policy.evaluate(operation, resource, scale, irreversible,
                                                     principal=leaf.root_principal,
-                                                    holders=[w.holder for w in chain])
+                                                    holders=[w.holder for w in chain], evidence=evidence)
             detail.update(evidence)
         except _Undescribable as exc:
             operation, resource, scale, irreversible = method.lower(), f"{upstream.name}.undescribed", 1, False

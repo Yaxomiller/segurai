@@ -160,3 +160,24 @@ def test_the_dashboard_explains_a_broken_rule():
     page = session_page(segurai._runtime.store, s.session_id)
     assert "organisation rule that no request can override" in page
     assert "support agents never delete" in page
+
+
+def test_rules_can_depend_on_what_the_action_reports():
+    from segurai.policy import PolicyError
+
+    big = Rule.from_dict({"name": "big refunds", "effect": "approve", "operations": ["refund"],
+                          "when_above": {"amount_cents": 5000}})
+    recent = Rule.from_dict({"name": "recent", "effect": "deny", "operations": ["archive"],
+                             "when_below": {"days_since_activity": 180}})
+    policy = Policy((big, recent))
+    assert policy.evaluate("refund", "billing.refunds", evidence={"amount_cents": 5000}) == []
+    assert policy.evaluate("refund", "billing.refunds", evidence={"amount_cents": 5001})[0].check == "approval"
+    assert policy.evaluate("refund", "billing.refunds")[0].check == "approval"      # unreported counts
+    assert policy.evaluate("refund", "billing.refunds", evidence={"amount_cents": "lots"})
+    assert policy.evaluate("archive", "crm.deals", evidence={"days_since_activity": [400, 200]}) == []
+    assert policy.evaluate("archive", "crm.deals", evidence={"days_since_activity": [400, 12]})[0].check == "policy"
+    assert Policy.from_dict(policy.to_dict()).version == policy.version
+    with pytest.raises(PolicyError, match="deny and approve"):
+        Rule.from_dict({"name": "x", "effect": "limit", "max_scale": 5, "when_above": {"a": 1}})
+    with pytest.raises(PolicyError, match="number"):
+        Rule.from_dict({"name": "x", "effect": "deny", "when_above": {"a": "one"}})

@@ -376,7 +376,9 @@ Safety defaults: it listens only on the local machine unless told otherwise, can
 - Each grant is recorded (`grants` table, in the log and the evidence pack) with the token's SHA-256, never the token.
 - What the fast path can't do: bound how many records a token's holder touches, or check conditions per record. That is why those operations never go in it.
 
-**Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny, limit and approve rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force.
+**Company rules** ([`policy.py`](../src/segurai/policy.py)). Deny, limit and approve rules apply on top of every warrant, and no grant can override them. Each version is written into the log, and every finding names the version in force. Deny and approve rules can depend on what the action reports (`when_above`, `when_below`, for example a refund's amount). Missing evidence counts as crossing the line.
+
+**Templates** ([`templates.py`](../src/segurai/templates.py)). A template packages one job: parameters, the routes describing the system's API, the company rules and ceiling, a system prompt, and tools that map one-to-one onto the routes. `render` produces the `segurai.toml` part, and `agent` runs Claude with those tools through `GatewayClient`. A 202 or 403 is turned into a plain sentence for the model ("held for approval; tell the person"), so it stops instead of looking for another way. The agent loop is the stage's (`stage/agents.py`).
 
 **Step-up approvals** ([`approvals.py`](../src/segurai/approvals.py)). Some actions are fine only if a person agrees. The gateway holds those instead of refusing them.
 
@@ -429,6 +431,7 @@ src/segurai/
   credentials.py       the gateway's credentials: Vault, AWS, GCP, env, OAuth2 tokens
   revocation.py        stopping a request, or one warrant, before it expires
   queues.py            the chain across a queue: handoff, sealed keys, received; SQS/Kafka/Celery
+  templates.py         governed templates: crm-hygiene, refunds
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -496,6 +499,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_templates.py` | each template's configuration loads; parameters are checked; the CRM agent archives only stale deals (a recently active one is refused, a deletion waits); the refunds agent refunds small, waits on large, never on huge; `init` writes a config and an agent that compiles |
 | `test_queues.py` | a sealed handoff lets only the named worker act (and delegate) under the person's chain; without the key the chain is proven but can't act; wrong worker, swapped key, foreign, plain-keyed or expired messages are refused; SQS/Kafka/Celery shapes round-trip; span links show as inferred, never as proof |
 | `test_step3.py` | triggers fire only for the job they name, with their registered scope, and never for a person; the intent cache saves model calls per person and request; revocation stops a request (or one warrant and what it delegated) at the gateway in either mode, denies what waits for approval, and works from the dashboard and the CLI |
 | `test_credentials.py` | Vault (Kubernetes and AppRole logins, KV v2, dynamic leases, lapsed logins, outages), AWS and GCP secret managers, OAuth2 tokens; a rotated key picked up after a 401; secrets never in errors or records; the fast path carries only what no check could stop and never outlives its warrant |
