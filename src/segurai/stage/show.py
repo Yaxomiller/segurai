@@ -1080,7 +1080,8 @@ def _verdict(run: Run) -> str:
 
 
 def rehearse(folder: str | Path = "segurai-stage", *, rounds: int = 2, model: str = DEFAULT_MODEL,
-             effort: str = DEFAULT_EFFORT, brain: Any = None, out: Any = print) -> int:
+             effort: str = DEFAULT_EFFORT, brain: Any = None, out: Any = print,
+             only: list[int] | None = None) -> int:
     """Run every scripted scene a few times with real Claude, with nobody watching, and say how each went.
 
     Runs where something happened are recorded, so the ones that went well
@@ -1090,7 +1091,7 @@ def rehearse(folder: str | Path = "segurai-stage", *, rounds: int = 2, model: st
     """
     stage = Stage(folder, brain=brain, model=model, effort=effort, beat=0, decision_timeout=0)
     total, landed, recorded = 0.0, {}, 0
-    scenes = [s for s in SCENES.values() if not s.free]
+    scenes = [s for s in SCENES.values() if not s.free and (not only or s.number in only)]
     try:
         for scene in scenes:
             for i in range(rounds):

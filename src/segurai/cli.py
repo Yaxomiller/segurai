@@ -537,11 +537,18 @@ def cmd_stage(args: argparse.Namespace) -> int:
             return 2
         from .stage.show import SCENES
 
-        numbers = [s.number for s in SCENES.values() if not s.free]
-        print(f"Rehearsing scenes {min(numbers)}-{max(numbers)}, {args.rehearse} run(s) each, with real Claude. "
+        numbers = [s.number for s in SCENES.values() if not s.free and (not args.scene or s.number in args.scene)]
+        if not numbers:
+            print("--scene takes the number of a scripted scene: "
+                  + ", ".join(str(s.number) for s in SCENES.values() if not s.free))
+            return 2
+        which = (f"scene {numbers[0]}" if len(numbers) == 1 else
+                 f"scenes {min(numbers)}-{max(numbers)}" if numbers == list(range(min(numbers), max(numbers) + 1))
+                 else "scenes " + ", ".join(map(str, numbers)))
+        print(f"Rehearsing {which}, {args.rehearse} run(s) each, with real Claude. "
               f"This takes a few minutes and costs a few cents per run.")
         return rehearse(args.dir, rounds=args.rehearse, model=args.model or DEFAULT_MODEL,
-                        effort=args.effort or DEFAULT_EFFORT)
+                        effort=args.effort or DEFAULT_EFFORT, only=args.scene)
     return serve_stage(args.dir, port=args.port, model=args.model or DEFAULT_MODEL,
                        effort=args.effort or DEFAULT_EFFORT, open_browser=not args.no_browser)
 
@@ -1025,8 +1032,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="how hard the agents think (default low, which keeps each step quick)")
     s.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     s.add_argument("--rehearse", type=int, metavar="N", default=None,
-                   help="instead of opening the stage, run scenes 1-3 N times each with real Claude "
+                   help="instead of opening the stage, run scenes 1-4 N times each with real Claude "
                         "and report how each went (each run costs a few cents and is recorded)")
+    s.add_argument("--scene", type=int, action="append", metavar="NUMBER",
+                   help="with --rehearse: only this scene (repeatable), e.g. --scene 1")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("init", help="write a commented segurai.toml and a signing key")

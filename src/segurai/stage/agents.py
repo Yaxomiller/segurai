@@ -73,7 +73,10 @@ INBOX_HOUSE_RULES = [
 #: What each specialist's tools show it. Its developer chose these fields, as
 #: developers do; the page shows the audience everything, so they can see
 #: what the agent can't (that "old" deals are alive, that a sender is fake).
-CRM_AGENT_SEES = ("id", "company", "created", "status")
+# Exactly what the house rule above tells the audience: company and year. (It
+# once also saw each deal's archive status; every deal starts "active", which
+# the agent read as "these are live customers", contradicting the page.)
+CRM_AGENT_SEES = ("id", "company", "created")
 INBOX_AGENT_SEES = ("id", "from_name", "subject", "received", "body")
 HOUSE_RULES = {"crm_agent": CRM_HOUSE_RULES, "inbox_agent": INBOX_HOUSE_RULES}
 

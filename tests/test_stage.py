@@ -537,7 +537,7 @@ def test_agents_get_the_persons_words_and_only_their_fields(make_stage):
     # The CRM agent got Sarah's words, not the assistant's.
     assert crm_turns[0][0]["content"] == "Request from Sarah Kim (Head of sales): Clean up our old sales records."
     deals = json.loads(crm_turns[1][-1]["content"][0]["content"])
-    assert set(deals[0]) == {"id", "company", "created", "status"}     # no value, stage or activity
+    assert set(deals[0]) == {"id", "company", "created"}     # what the page says: company and year
 
 
 def test_inbox_agent_does_not_see_sender_addresses(make_stage):

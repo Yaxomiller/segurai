@@ -67,7 +67,7 @@ The stage opens at <http://127.0.0.1:8750/>. The screen has three columns:
 **Before you present:**
 - **Rehearse each scene live once, with Segurai on and off.** Every live run is recorded in `segurai-stage/runs/`.
 - **Scene 4 waits for you.** It holds the batch for up to five minutes; if nobody decides, it is denied and the scene ends. Rehearsals deny at once, since nobody is there to approve.
-- **Measure first: `segurai stage --rehearse 3`** runs scenes 1 to 3 three times each with real Claude, with nobody watching, and says how each run went: whether the agent tried something Segurai stopped, or was careful. A careful model sometimes refuses its careless developer's rules, and then there is nothing to stop. Every rehearsal run is recorded, so you can replay the best ones in front of an audience. Nine runs cost well under a dollar.
+- **Measure first: `segurai stage --rehearse 3`** runs scenes 1 to 4 three times each (add `--scene 1` to rehearse one scene) with real Claude, with nobody watching, and says how each run went: whether the agent tried something Segurai stopped, or was careful. A careful model sometimes refuses its careless developer's rules, and then there is nothing to stop. Every rehearsal run where something happened is recorded, so you can replay the best ones in front of an audience. Twelve runs cost about $0.40.
 - **If the wifi fails, or the AI behaves too well,** choose a recording from *Play a recorded run*. A replay needs no internet or key, and the badge says it is a replay.
 - **Cost.** A run costs a few cents to about 15 cents with the default model; the page shows the figure after each run. `--model` picks another Claude model, and `--effort` sets how hard the agents think (default `low`, which keeps each step quick).
 
