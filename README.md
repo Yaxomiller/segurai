@@ -485,6 +485,8 @@ segurai sessions              # list recent sessions
 segurai show <session_id>     # render the delegation tree (--json, --ascii)
 segurai verify <session_id>   # re-check every signature, link and narrowing
 segurai revoke <session_id>   # stop a request's agents at the gateway, now (--reason, --by, --warrant)
+segurai template list|init    # ready-made agents for known jobs, guardrails included
+segurai baseline              # Tier 3: what agents usually do (--rules proposes limits, --check flags the unusual)
 segurai creep <session_id>    # granted vs exercised scope
 segurai report --days 30      # scope-creep report across sessions
 segurai audit                 # check the tamper-evident log (--witness FILE)

@@ -849,6 +849,16 @@ class Store:
         rows = self._read("SELECT * FROM actions WHERE action_id = ?", (action_id,))
         return _row_to_action(rows[0]) if rows else None
 
+    def actions_between(self, since: datetime, until: datetime) -> list[ActionRecord]:
+        """Every action recorded from ``since`` to ``until`` inclusive, oldest first (Tier 3 learns from these).
+
+        Inclusive at both ends: clocks tick coarsely (about 16 ms on Windows),
+        so "now" can equal the newest action's own timestamp.
+        """
+        rows = self._read("SELECT * FROM actions WHERE at >= ? AND at <= ? ORDER BY at, rowid",
+                          (since.isoformat(), until.isoformat()))
+        return [_row_to_action(r) for r in rows]
+
     def violations(self, session_id: str | None = None) -> list[ActionRecord]:
         if session_id:
             rows = self._read(

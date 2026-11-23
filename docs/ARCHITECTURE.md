@@ -181,6 +181,17 @@ The model's output is treated as untrusted. It can only ever *narrow* the person
 
 ---
 
+## Tier 3: the organisation's own baseline
+
+Tier 1's limits and Tier 2's judgement both start from someone's guess at what is normal. [`baseline.py`](../src/segurai/baseline.py) reads what *is* normal here, from the record:
+
+- It learns from **clean history only**: actions that were allowed and happened. Blocked and flagged actions are not normal, whatever their number. Observed telemetry is left out unless asked for (`--observed`).
+- For each (agent, operation, resource) it keeps the count, the requests, the sizes (median, 95th and 99th percentile, largest) and any irreversible actions.
+- **Proposals** (`segurai baseline --rules`) are ordinary company rules, for a person to read and adopt: a limit at the 99th percentile times `headroom`, rounded up to a readable number and never below the largest seen, and "nothing irreversible" where nothing irreversible ever happened. Each one carries its evidence in `reason`. A pattern needs `min_samples` (20) actions to propose anything.
+- **Unusual actions** (`--check <session>`): far above the usual size (more than twice the 99th percentile and above the largest ever), a first irreversible action, an operation the agent never used, an agent with no history. Like Tier 2 it is advice and never changes a Tier 1 decision.
+
+It is statistics, not a trained model. With little history it proposes little, by design.
+
 ## The scope-creep report
 
 [`report.py`](../src/segurai/report.py) turns a window of recorded activity into least-privilege advice. For every identity (each agent by name, and each person's session root) it compares what was **granted**, from warrants or from a grants file exported from an identity provider, with what was **used**: actions that actually happened. Blocked attempts are listed separately, because they never happened.
@@ -432,6 +443,7 @@ src/segurai/
   revocation.py        stopping a request, or one warrant, before it expires
   queues.py            the chain across a queue: handoff, sealed keys, received; SQS/Kafka/Celery
   templates.py         governed templates: crm-hygiene, refunds
+  baseline.py          Tier 3: usual patterns from clean history; proposed rules; unusual actions
   identity.py          checking ID tokens from a company login system (OIDC)
   issuer.py            POST /v1/sessions: roots for proven people, inside ceilings
   gateway.py           the reverse proxy agents must go through
@@ -499,6 +511,7 @@ tests/                 one file per area; see below
 | `test_delegation.py` | holder keys: each hop signs the next; chain tokens cross processes; a copied chain without its key can't act |
 | `test_identity.py` | ID tokens: forged, expired, wrong audience or issuer, symmetric algorithms, unverified email and foreign domains are all refused |
 | `test_gateway.py` | the gateway refuses unsigned, replayed, stale or out-of-scope requests before the upstream sees them; ambiguous requests are refused, not guessed |
+| `test_baseline.py` | the baseline learns only from clean history; proposals are readable limits carrying their evidence, load as rules and bite; too little history proposes nothing; unusual sizes, first irreversible actions, new operations and unknown agents are flagged, new tables to read are not |
 | `test_templates.py` | each template's configuration loads; parameters are checked; the CRM agent archives only stale deals (a recently active one is refused, a deletion waits); the refunds agent refunds small, waits on large, never on huge; `init` writes a config and an agent that compiles |
 | `test_queues.py` | a sealed handoff lets only the named worker act (and delegate) under the person's chain; without the key the chain is proven but can't act; wrong worker, swapped key, foreign, plain-keyed or expired messages are refused; SQS/Kafka/Celery shapes round-trip; span links show as inferred, never as proof |
 | `test_step3.py` | triggers fire only for the job they name, with their registered scope, and never for a person; the intent cache saves model calls per person and request; revocation stops a request (or one warrant and what it delegated) at the gateway in either mode, denies what waits for approval, and works from the dashboard and the CLI |

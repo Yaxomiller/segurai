@@ -6,6 +6,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- **Tier 3: the organisation's own record decides what "usual" means** ([`baseline.py`](src/segurai/baseline.py)). `segurai baseline` learns, from clean history only (allowed actions that happened, not observed telemetry), what each agent does with each operation and resource: how often, in how many requests, and the sizes (median, 95th and 99th percentile, largest).
+  - `--rules` proposes company rules for a person to adopt: limits at a readable number above the 99th percentile, never below the largest seen, and "nothing irreversible" where nothing irreversible ever happened. Each one states the evidence it came from. Patterns with fewer than 20 actions propose nothing.
+  - `--check <session>` flags anything in a request far outside the usual: far above the usual size, a first irreversible action, an operation the agent never used, or an agent with no history. It is advice; it never changes Tier 1's decision.
+  - This is statistics, not a trained model, and it says so.
 - **Governed templates: ready-made agents for known jobs, guardrails included** ([`templates.py`](src/segurai/templates.py)). `segurai template list | show <name> | init <name> --set name=value` writes two files. One is the `segurai.toml` part for the job (gateway routes, company rules, the ceiling for who may use it). The other is a runnable Claude agent whose tools are exactly those routes, called through the gateway. The agent tells the person plainly when something waits for approval or was refused.
   - `crm-hygiene` finds deals with no activity for `stale_days` and archives them in batches of at most `archive_limit`. A deny rule stops it touching any deal active more recently, and deleting needs a second person.
   - `refunds` refunds up to `auto_limit_cents` at once. Larger refunds wait for a person, and none above `max_refund_cents` is allowed.

@@ -22,6 +22,7 @@
     segurai judge <session_id>       Tier 2: judge a session's flagged actions
     segurai revoke <session_id>      stop a request's agents at the gateway, now
     segurai template list|show|init  ready-made agents for known jobs, guardrails included
+    segurai baseline                 Tier 3: what agents usually do; rules proposed from it
     segurai eval-judge               grade the Tier 2 judge on labeled cases
 
 ``--db`` selects the store, defaulting to ./segurai.db. The signing key is
@@ -294,6 +295,41 @@ def cmd_evidence_verify(args: argparse.Namespace) -> int:
         return 2
     print(report.to_text())
     return 0 if report.ok else 1
+
+
+def cmd_baseline(args: argparse.Namespace) -> int:
+    """Tier 3: learn what agents usually do from the record; propose rules; flag the unusual."""
+    from .baseline import learn, summary
+    from .templates import _toml
+
+    store = _store(args)
+    baseline = learn(store, days=args.days, min_samples=args.min_samples, include_observed=args.observed)
+    if args.check:
+        actions = store.actions_for_session(args.check)
+        if not actions:
+            print(f"No actions recorded for {args.check}")
+            return 1
+        found = baseline.unusual(actions, factor=args.factor)
+        print(f"{len(actions)} action(s) in {args.check}, checked against {baseline.actions} clean actions "
+              f"from the last {args.days} days:")
+        for u in found:
+            print(f"  unusual  {u.action_id}  {u.reason}")
+        if not found:
+            print("  nothing unusual")
+        return 0
+    if args.rules:
+        rules = baseline.proposals(headroom=args.headroom)
+        print(f"# Proposed from this organisation's own record ({baseline.actions} clean actions, last "
+              f"{args.days} days). Read before adopting: nothing here is applied by itself.")
+        for rule in rules:
+            print("", "[[policy.rules]]", sep="\n")
+            for key, value in rule.items():
+                print(f"{key} = {_toml(value)}")
+        if not rules:
+            print(f"# No pattern has {args.min_samples} actions yet: too little history to propose a limit.")
+        return 0
+    print(*summary(baseline), sep="\n")
+    return 0
 
 
 def cmd_template(args: argparse.Namespace) -> int:
@@ -911,6 +947,16 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("session_id")
     s.add_argument("--out", help="where to write the zip (default: <session>-evidence.zip)")
     s.set_defaults(func=cmd_evidence)
+
+    s = sub.add_parser("baseline", help="Tier 3: what agents usually do, and rules proposed from it")
+    s.add_argument("--days", type=int, default=30, help="how far back to learn from (default 30)")
+    s.add_argument("--min-samples", type=int, default=20, help="actions a pattern needs before it counts")
+    s.add_argument("--headroom", type=float, default=1.5, help="proposed limit = p99 x this, rounded up")
+    s.add_argument("--rules", action="store_true", help="print proposed company rules as TOML")
+    s.add_argument("--check", metavar="SESSION", help="flag anything in this request far outside the usual")
+    s.add_argument("--factor", type=float, default=2.0, help="how far above the usual counts as unusual")
+    s.add_argument("--observed", action="store_true", help="also learn from observed (unchecked) telemetry")
+    s.set_defaults(func=cmd_baseline)
 
     s = sub.add_parser("template", help="ready-made agents for known jobs, with their guardrails")
     s.add_argument("action", choices=["list", "show", "init"])
