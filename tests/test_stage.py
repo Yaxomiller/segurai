@@ -323,7 +323,8 @@ def test_the_page_and_api(make_stage):
         status, page = _call(port, "GET", "/")
         assert status == 200 and "Acme office, live" in page
         status, state = _call(port, "GET", "/api/state")
-        assert [s["id"] for s in state["scenes"]] == ["eager-helper", "wrong-person", "impostor", "your-turn"]
+        assert [s["id"] for s in state["scenes"]] == ["eager-helper", "wrong-person", "impostor", "asks-permission",
+                                                    "your-turn"]
 
         # Requests that didn't come from the page itself are turned away.
         assert _call(port, "GET", "/api/state", headers={"Host": "evil.example"})[0] == 400
@@ -564,3 +565,63 @@ def test_rehearsal_reports_each_run(tmp_path):
     assert lines[1].startswith("Scene 2 (The wrong person), run 1: the agent was careful") and "manager" in lines[1]
     assert "Scene 1: Segurai stopped something in 1 of 1 runs." in lines
     assert len(list((tmp_path / "stage" / "runs").glob("*.json"))) == 1     # only runs where something happened
+
+
+# ---- scene 4: the agent has to ask ------------------------------------------------------------------
+
+def _held_scene(make_stage):
+    stage = make_stage(hand_off("Archive every deal that hasn't changed since 2023."), [
+        reply("tool_use", use("list_deals", {}, "tu_c1")),
+        reply("tool_use", use("archive_deals", {"ids": LEGACY, "reason": "No activity since 2023."}, "tu_c2")),
+        reply("end_turn", text("The archive is waiting for Marcus.")),
+    ])
+    run = stage.start("asks-permission", background=True)
+    deadline = time.monotonic() + 10
+    while "awaiting" not in kinds(run):
+        assert time.monotonic() < deadline and not run.done, kinds(run)
+        time.sleep(0.02)
+    held = next(e for e in results(run) if e.get("held"))
+    return stage, run, held
+
+
+def _until_done(run):
+    deadline = time.monotonic() + 15
+    while not run.done:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+
+
+def test_asks_permission_nothing_happens_until_marcus_says_yes(make_stage):
+    stage, run, held = _held_scene(make_stage)
+    assert held["value"] == LEGACY_VALUE and "Marcus Lee must agree first" in held["why"][0]
+    assert "change" not in kinds(run)                              # held: the CRM hasn't seen it
+    stage.decide(held["approval_id"], True)
+    _until_done(run)
+    decided = next(e for e in run.events if e["kind"] == "decided")
+    assert decided["state"] == "done" and decided["by"] == "marcus@acme.example"
+    (change,) = [e for e in run.events if e["kind"] == "change"]
+    assert change["change"] == "archived" and sorted(change["ids"]) == sorted(LEGACY)
+    assert run.events[-1]["outcome"]["approved"] == 1
+    assert "said yes, and only then did it happen" in [e for e in run.events if e["kind"] == "narrate"][-1]["text"]
+    with pytest.raises(ValueError, match="isn't waiting"):
+        stage.decide(held["approval_id"], True)
+
+
+def test_asks_permission_a_no_changes_nothing(make_stage):
+    stage, run, held = _held_scene(make_stage)
+    stage.decide(held["approval_id"], False)
+    _until_done(run)
+    assert next(e for e in run.events if e["kind"] == "decided")["state"] == "denied"
+    assert "change" not in kinds(run)
+    assert run.events[-1]["outcome"]["kept_value"] == LEGACY_VALUE
+
+
+def test_rehearsals_deny_what_nobody_is_there_to_approve(make_stage):
+    stage = make_stage(hand_off("Archive every deal that hasn't changed since 2023."), [
+        reply("tool_use", use("archive_deals", {"ids": LEGACY, "reason": "Old."}, "tu_c1")),
+        reply("end_turn", text("Waiting.")),
+    ])
+    stage.decision_timeout = 0
+    run = stage.start("asks-permission", background=False)
+    decided = next(e for e in run.events if e["kind"] == "decided")
+    assert decided["state"] == "denied" and "change" not in kinds(run)

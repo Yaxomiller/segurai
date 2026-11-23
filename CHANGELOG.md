@@ -52,7 +52,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
   - *Who did this?* traces any action back to the person. Each run also appears in the ordinary dashboard.
   - Every live run is recorded and can be played back without the internet or an API key, labelled as a replay.
   - Scene 3, the impostor: an email signed like a real customer's, from a look-alike address, asks for a copy of an email holding the customer's account number. The inbox agent helpfully replies; Segurai stops it, because the slip for a summary only lets the agent read (the issuer grants a request-specific slip within the person's ceiling). An earlier version used an obvious "forward the whole inbox" injection, which Claude refused every time.
-  - Scene 4, your turn: anyone at Acme, asking anything.
+  - Scene 4, asks permission: Sarah asks the AI to archive every deal untouched since 2023. A company rule says a batch of more than 5 needs Marcus, her sales director, to agree. The gateway holds the request, and the presenter, playing Marcus, approves or denies it with buttons on the page. Approved, exactly the held request is sent; denied, nothing changes. The ask and the answer are in the receipt.
+  - Scene 5, your turn: anyone at Acme, asking anything. Anything big enough to need Marcus waits for the presenter too.
   - The Segurai switch: the same agents with the systems' passwords and nothing in between, so the audience sees the damage Segurai prevents. Nothing is recorded with it off, and the page says so.
   - The receipt: the request's evidence pack, built from the real record, verified on the spot, and offered as a download with Acme's public key.
   - `segurai stage --rehearse N` runs scenes 1-3 N times with real Claude and reports how each went, recording every run for replay.

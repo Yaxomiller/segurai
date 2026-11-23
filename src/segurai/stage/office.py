@@ -39,6 +39,7 @@ from ..gateway import GatewayConfig, GatewayServer, Route, Upstream
 from ..identity import IdentityVerifier, TrustedIssuer
 from ..issuer import Ceiling, Issuer
 from ..models import ActionRecord, Scope
+from ..policy import Policy, Rule
 from ..runtime import configure
 
 __all__ = ["DEALS", "MAILBOX", "PEOPLE", "CEILINGS", "CEILING_BY_GROUP", "Person", "Office", "CRM",
@@ -70,6 +71,17 @@ class Person:
         return {"key": self.key, "name": self.name, "first": self.first, "title": self.title,
                 "email": self.email, "group": self.group_label, "initials": initials}
 
+
+#: Sarah's manager. A company rule says big batches need his yes; on the stage
+#: the presenter plays him, with the Approve and Deny buttons.
+APPROVER = Person("marcus", "Marcus Lee", "Sales director", "marcus@acme.example", "sales-leads", "sales leads")
+
+#: Acme's company rules. Archiving is fine - a big batch at once, only if
+#: Marcus agrees. The gateway holds it until he decides.
+RULES = Policy((Rule(name="archiving more than 5 deals at once needs Marcus's yes", effect="approve",
+                     operations=["archive"], targets=["crm.deals"], above_scale=5,
+                     approvers=(APPROVER.email,),
+                     reason="A big batch of archived deals is a decision for a person."),))
 
 PEOPLE: dict[str, Person] = {
     "sarah": Person("sarah", "Sarah Kim", "Head of sales", f"sarah@{ORG}", "sales-leads", "sales leads"),
@@ -471,8 +483,9 @@ class Office:
                 Route(method="POST", path="/send", operation="send", resource="email.outbound",
                       evidence={"to": "json:to"}),
             ))
+        self.store.put_policy(RULES)
         self.gateway = GatewayServer(("127.0.0.1", 0), GatewayConfig(upstreams=(crm_upstream, mail_upstream)),
-                                     self.store, self.authority, on_action=self._remember)
+                                     self.store, self.authority, policy=RULES, on_action=self._remember)
         self.direct = DirectClient({"/crm": (self.crm.url, self.crm.password),
                                     "/mail": (self.mail.url, self.mail.password)})
         threading.Thread(target=self.gateway.serve_forever, kwargs={"poll_interval": 0.05},

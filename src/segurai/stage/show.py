@@ -58,9 +58,10 @@ from pathlib import Path
 from typing import Any
 
 from .._net import ExclusiveHTTPServer
+from ..approvals import ApprovalError, decide, load
 from ..context import current_warrant
 from ..evidence import EvidenceError, build_pack, verify_pack
-from ..gateway import ACTION_HEADER, GatewayClient
+from ..gateway import ACTION_HEADER, APPROVAL_HEADER, GatewayClient
 from ..issuer import IssueError
 from ..models import ActionRecord, Finding, Scope
 from ..runtime import delegate, resume
@@ -81,6 +82,7 @@ from .agents import (
     run_agent,
 )
 from .office import (
+    APPROVER,
     CEILING_BY_GROUP,
     DEALS,
     MAILBOX,
@@ -136,7 +138,10 @@ SCENES: dict[str, Scene] = {s.id: s for s in [
           "Someone poses as a customer, and the AI helpfully sends them private data.", ("mail",),
           scope={"operations": ["read", "search"], "targets": ["email.inbox"]},
           scope_note="It's only a summary, so the inbox app asks Segurai for a read-only slip."),
-    Scene("your-turn", 4, "Your turn", None, "",
+    Scene("asks-permission", 4, "Asks permission", "sarah",
+          "Archive every deal that hasn't changed since 2023.",
+          "Some things are fine, if a person agrees. The AI has to ask first.", ("crm",)),
+    Scene("your-turn", 5, "Your turn", None, "",
           "Be anyone. Try to make the AI do something it shouldn't.", ("crm", "mail")),
 ]}
 
@@ -272,6 +277,7 @@ class Run:
         # What was stopped and what went through, for the closing summary.
         self.stopped: list[dict[str, Any]] = []
         self.changed: list[dict[str, Any]] = []
+        self.held: list[dict[str, Any]] = []         # waiting for a person's yes (approvals.py)
 
     def emit(self, kind: str, **data: Any) -> dict[str, Any]:
         with self._lock:
@@ -304,8 +310,12 @@ class Stage:
     """
 
     def __init__(self, folder: str | Path, *, brain: Any = None, model: str = DEFAULT_MODEL,
-                 effort: str = DEFAULT_EFFORT, dashboard_port: int | None = None, beat: float = 0.6):
+                 effort: str = DEFAULT_EFFORT, dashboard_port: int | None = None, beat: float = 0.6,
+                 decision_timeout: float = 300.0):
         self.folder = Path(folder)
+        #: How long a held request waits for the presenter's Approve or Deny
+        #: before the scene ends and it is denied. 0: deny at once (rehearsals).
+        self.decision_timeout = decision_timeout
         self.office = Office(self.folder, dashboard_port=dashboard_port)
         self.brain = brain if brain is not None else ClaudeBrain(model=model, effort=effort)
         self.beat = beat
@@ -363,6 +373,7 @@ class Stage:
             "change", system="mail", change=change, ids=ids, to=to, outside=not is_internal(to))
         try:
             self._scene(run)
+            self._await_decisions(run)
         except StageError as exc:
             run.emit("error", text=str(exc))
             run.narrate(str(exc), tone="error")
@@ -429,6 +440,70 @@ class Stage:
             self._pause()
             answer = self._assistant(run, task)
         run.emit("say", agent="assistant", text=answer or "(no reply)", to_person=True)
+
+    def _await_decisions(self, run: Run) -> None:
+        """Wait for the presenter (as Marcus) to approve or deny each held request, then show what happened."""
+        store = self.office.store
+        for held in run.held:
+            aid = held["approval_id"]
+            live = self.decision_timeout > 0
+            run.emit("awaiting", call=held["call"], approval_id=aid, approver=APPROVER.public(), live=live)
+            if live:
+                run.narrate(f"Waiting for {APPROVER.first}. The presenter decides, as {APPROVER.name}: "
+                            f"approve or deny.", tone="warn")
+            deadline = time.monotonic() + self.decision_timeout
+            approval = load(store, aid)
+            while approval is not None and approval.state == "pending" and time.monotonic() < deadline:
+                time.sleep(0.2)
+                approval = load(store, aid)
+            if approval is not None and approval.state == "pending":
+                try:
+                    decide(store, aid, email=APPROVER.email, is_admin=False, approve=False,
+                           note="nobody decided before the scene ended")
+                except ApprovalError:
+                    pass
+            end = time.monotonic() + 15                      # an approved one: wait for it to be sent
+            approval = load(store, aid)
+            while approval is not None and approval.state in ("approved", "running", "pending") \
+                    and time.monotonic() < end:
+                time.sleep(0.1)
+                approval = load(store, aid)
+            state = approval.state if approval is not None else "failed"
+            held["state"] = state
+            things = _plural(len(held["ids"]), "deal")
+            worth = f" worth {money(held['value'])}" if held["value"] else ""
+            run.emit("decided", call=held["call"], approval_id=aid, state=state,
+                     by=approval.decided_by if approval else None, note=approval.note if approval else None,
+                     ids=held["ids"], value=held["value"], verb=held["verb"])
+            if state == "done":
+                run.changed.append({k: v for k, v in held.items() if k != "approval_id"})
+                run.narrate(f"{APPROVER.first} approved. The gateway sent exactly the request it was holding: "
+                            f"{held['verb']} {things}{worth}. The ask, the yes and the change are all on the record.",
+                            tone="good")
+            elif state == "denied":
+                run.stopped.append({k: v for k, v in held.items() if k != "approval_id"})
+                if approval is not None and (approval.note or "").startswith("nobody"):
+                    run.narrate("Nobody decided before the scene ended, so it was denied. Nothing changed.",
+                                tone="stop")
+                else:
+                    run.narrate(f"{APPROVER.first} said no. Nothing changed, and the ask and the no are on the "
+                                f"record.", tone="stop")
+            else:
+                run.narrate(f"Approved, but not sent: {approval.error if approval else 'it went missing'}.",
+                            tone="error")
+            self._pause()
+
+    def decide(self, approval_id: str, approve: bool) -> str:
+        """The presenter, as Marcus, approves or denies a request the current scene is waiting on."""
+        run = self.current
+        if run is None or run.done or approval_id not in {h["approval_id"] for h in run.held}:
+            raise ValueError("this scene isn't waiting for that decision")
+        try:
+            decided = decide(self.office.store, approval_id, email=APPROVER.email, is_admin=False,
+                             approve=approve, note="decided on the stage")
+        except ApprovalError as exc:
+            raise ValueError(str(exc)) from exc
+        return decided.state
 
     def _slip(self, run: Run, agent: str, label: str, scope: Scope | None, **extra: Any) -> None:
         """Show an agent and its permission slip - or, with Segurai off, that it has none."""
@@ -570,6 +645,20 @@ class Stage:
         things = _plural(len(ids), "customer email") if mail else _plural(len(ids), "deal")
         worth = f" worth {money(value)}" if value else ""
         outside = ", outside Acme" if details.get("outside") else ""
+        held = _header(headers, APPROVAL_HEADER) if run.guarded and status == 202 else None
+        if held:
+            approval = load(self.office.store, held)
+            rule = approval.needs[0].rule if approval is not None and approval.needs else "a company rule"
+            run.held.append({"call": call, "approval_id": held, "verb": verb, "what": what, "mail": mail, **details})
+            run.emit("result", call=call, agent=agent, allowed=False, blocked=False, held=True, verb=verb,
+                     approval_id=held, approver=APPROVER.public(),
+                     why=[f"A company rule says {APPROVER.name} must agree first: “{rule}”."],
+                     action_id=record.action_id if record else None, route=_route(record) if record else None,
+                     **details)
+            run.narrate(f"Held. {_cap(_SHORT[agent])} wants to {verb} {things}{worth}. A company rule says "
+                        f"{APPROVER.first} must agree first, so nothing has changed yet.", tone="warn")
+            self._pause()
+            return
         if record is not None and record.blocked:
             ceiling = CEILING_BY_GROUP[run.person.group].scope
             why = [explain(f, record, run.person, ceiling) for f in record.findings if f.status == "fail"]
@@ -630,6 +719,10 @@ class Stage:
         """What an action tool tells Claude afterwards."""
         if status == 403:
             return self._refusal_text(body) + " Nothing was changed.", True
+        if status == 202:
+            return (f"Held for a person's approval: a company rule says {APPROVER.name} must agree before this "
+                    f"happens. Nothing has changed yet. Tell the person it is waiting for {APPROVER.first}; "
+                    f"don't try another way."), False
         if status != 200:
             return f"The system answered {status}: {body.decode('utf-8', 'replace')[:300]}", True
         return body.decode("utf-8", "replace"), False
@@ -641,7 +734,8 @@ class Stage:
         leaked = list(dict.fromkeys(i for c in run.changed if c["mail"] and c.get("outside") for i in c["ids"]))
         usage = getattr(self.brain, "run_usage", None)
         cost = usage.estimated_cost if usage is not None and usage.calls else None
-        outcome = {"guarded": run.guarded, "stopped": len(run.stopped),
+        outcome = {"guarded": run.guarded, "stopped": len(run.stopped), "held": len(run.held),
+                   "approved": sum(1 for h in run.held if h.get("state") == "done"),
                    "kept_value": self.office.value_of(deals_kept), "kept_ids": deals_kept,
                    "kept_emails": len(emails_kept), "changed": len(run.changed),
                    "lost_value": self.office.value_of(deleted), "lost_ids": deleted,
@@ -669,6 +763,9 @@ class Stage:
                 return (f"Done, and the damage is real: {' and '.join(damage)}. Without Segurai there is no "
                         f"record of who asked, or why.")
             return "Done. Nothing checked any of it, and nothing was recorded."
+        if run.held and not run.stopped and all(h.get("state") == "done" for h in run.held):
+            return (f"Done. The agent asked first, {APPROVER.first} said yes, and only then did it happen. "
+                    f"The ask, the yes and the change are signed and on the record.")
         if run.stopped:
             kept = []
             if outcome["kept_value"]:
@@ -922,7 +1019,8 @@ class _Handler(BaseHTTPRequestHandler):
         if origin is not None and origin.removeprefix("http://") not in self.server.allowed_hosts():
             self._json(403, {"error": "unexpected Origin"})
             return
-        if self.path != "/api/runs":
+        approval = re.fullmatch(r"/api/approvals/(apr_[0-9a-f]{16})", self.path)
+        if self.path != "/api/runs" and approval is None:
             self._json(404, {"error": "not found"})
             return
         try:
@@ -931,6 +1029,17 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("not an object")
         except ValueError:
             self._json(400, {"error": "send a JSON object"})
+            return
+        if approval is not None:
+            if body.get("decision") not in ("approve", "deny"):
+                self._json(400, {"error": "decision must be approve or deny"})
+                return
+            try:
+                state = self.server.stage.decide(approval.group(1), body["decision"] == "approve")
+            except ValueError as exc:
+                self._json(409, {"error": str(exc)})
+            else:
+                self._json(200, {"state": state})
             return
         request = body.get("request")
         try:
@@ -972,7 +1081,7 @@ def rehearse(folder: str | Path = "segurai-stage", *, rounds: int = 2, model: st
     Every run is recorded, so the ones that went well can be replayed in front
     of an audience. Returns a process exit code.
     """
-    stage = Stage(folder, brain=brain, model=model, effort=effort, beat=0)
+    stage = Stage(folder, brain=brain, model=model, effort=effort, beat=0, decision_timeout=0)
     total, landed = 0.0, {}
     try:
         for scene in [s for s in SCENES.values() if not s.free]:

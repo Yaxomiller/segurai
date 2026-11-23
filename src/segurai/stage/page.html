@@ -38,7 +38,7 @@ button, select, textarea { font: inherit; }
 .switch:disabled { opacity: .55; cursor: default; }
 
 .setup { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; padding: 14px 24px 0; }
-.scenes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.scenes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .scene { text-align: left; border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; }
 .scene:hover { border-color: #b9b4a6; }
 .scene.on { border: 2px solid var(--accent); padding: 9px 11px; }
@@ -145,6 +145,16 @@ tr.opened td { font-weight: 400; }
 .banner .kept b { display: block; font-size: 26px; }
 .banner .kept span { font-size: 13px; color: var(--muted); }
 .banner.loss .kept span { color: #f6c7c1; }
+.banner.ask { border-color: var(--warn); background: var(--warn-bg); }
+.banner.ask .big { color: var(--warn); }
+.banner.yes { border-color: var(--good); background: var(--good-bg); }
+.banner.yes .big { color: var(--good); }
+.decide { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.decide button { font: inherit; font-size: 15px; font-weight: 700; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 2px solid var(--line); background: var(--panel); }
+.decide button.yes { background: var(--good); border-color: var(--good); color: #fff; }
+.decide button.no { border-color: var(--stop); color: var(--stop); }
+.decide button:disabled { opacity: .5; cursor: default; }
+.pill.held { background: var(--warn-bg); color: var(--warn); }
 .line { font-size: 19px; min-height: 28px; }
 .line.good { color: var(--good); }
 .line.stop { color: var(--stop); font-weight: 600; }
@@ -245,7 +255,8 @@ tr.opened td { font-weight: 400; }
 <footer class="narration">
   <div id="banner" class="banner hidden" role="status">
     <div class="hand" id="banner-icon" aria-hidden="true">&#9995;</div>
-    <div><div class="big" id="banner-title">Stopped before it happened</div><div class="small" id="banner-text"></div></div>
+    <div><div class="big" id="banner-title">Stopped before it happened</div><div class="small" id="banner-text"></div>
+      <div class="decide hidden" id="banner-decide"><button type="button" class="yes" id="approve">Approve</button><button type="button" class="no" id="deny">Deny</button></div></div>
     <div class="kept"><b id="kept">$0</b><span id="kept-label">of deals kept safe</span></div>
   </div>
   <div class="prev" id="prev"></div>
@@ -331,7 +342,7 @@ function clearStage() {
   $("asks").append(el("p", "muted", "Press Run it live to start."));
   $("chain").textContent = "";
   $("chain").append(el("p", "muted", "Each agent carries a signed permission slip. It can only shrink as it is passed on."));
-  for (const id of ["banner", "record", "receipt-button", "no-receipt", "trace", "receipt"]) $(id).classList.add("hidden");
+  for (const id of ["banner", "banner-decide", "record", "receipt-button", "no-receipt", "trace", "receipt"]) $(id).classList.add("hidden");
   $("cost").textContent = ""; $("prev").textContent = "";
   narrate("Real Claude agents. A simulated company. Segurai deciding what they may do.");
   $("prev").textContent = "";
@@ -477,6 +488,8 @@ function render(e) {
     case "try": return onTry(e);
     case "result": return onResult(e);
     case "change": return onChange(e);
+    case "awaiting": return onAwaiting(e);
+    case "decided": return onDecided(e);
     case "narrate": return narrate(e.text, e.tone);
     case "error": setThinking(null); return;
     case "end": return onEnd(e);
@@ -504,7 +517,7 @@ function onStart(e) {
   showSystems(e.systems || ["crm"]);
   drawDeals(e.deals || []);
   drawEmails(e.emails || []);
-  for (const id of ["banner", "record", "receipt-button", "no-receipt"]) $(id).classList.add("hidden");
+  for (const id of ["banner", "banner-decide", "record", "receipt-button", "no-receipt"]) $(id).classList.add("hidden");
   $("cost").textContent = "";
   $("prev").textContent = ""; $("line").textContent = ""; $("line").className = "line";
 }
@@ -625,6 +638,18 @@ function onResult(e) {
   for (const id of e.ids || []) { const tr = rowFor(id); if (tr) tr.classList.remove("pending"); }
   if (!li) return;
   const pill = li.querySelector(".pill");
+  if (e.held) {
+    // Not refused: waiting for a person. Nothing has reached the CRM yet.
+    pill.className = "pill held"; pill.textContent = "⏸ waiting for a person";
+    const why = el("ul", "why");
+    for (const w of e.why) why.append(el("li", null, w));
+    li.append(why);
+    for (const id of e.ids || []) setStatus(id, "awaiting approval", "");
+    if (e.approver) approver = e.approver;
+    showAskBanner(e);
+    follow(li);
+    return;
+  }
   if (e.blocked) {
     pill.className = "pill no"; pill.textContent = "✋ stopped";
     li.classList.add("blocked");
@@ -652,6 +677,71 @@ function onResult(e) {
     pill.className = "pill no"; pill.textContent = "refused";
   }
   if (e.allowed && e.verb === "read") for (const id of e.ids || []) setStatus(id, "read", "");
+}
+
+// ---- a request held for a person's approval ------------------------------------------------
+let approver = null;     // who decides (from the scene); the presenter plays them
+let liveRun = false;     // the buttons only work in a live run, never in a replay
+
+function showAskBanner(e) {
+  const b = $("banner");
+  b.className = "banner ask";
+  $("banner-icon").textContent = "⏸";
+  $("banner-title").textContent = "Waiting for a person";
+  const who = e.agent === "inbox_agent" ? "The inbox agent" : "The CRM agent";
+  $("banner-text").textContent = who + " wants to " + e.verb + " " + plural((e.ids || []).length, "deal")
+    + (e.value ? " worth " + money(e.value) : "") + ". " + (e.why[0] || "");
+  $("kept").textContent = "Nothing"; $("kept-label").textContent = "changed yet";
+}
+
+function onAwaiting(e) {
+  if (e.approver) approver = e.approver;
+  if (!(e.live && liveRun)) return;
+  const first = (approver || {}).first || "the approver";
+  $("approve").textContent = "Approve as " + first;
+  $("deny").textContent = "Deny";
+  for (const id of ["approve", "deny"]) $(id).disabled = false;
+  $("approve").onclick = () => decideHeld(e.approval_id, "approve");
+  $("deny").onclick = () => decideHeld(e.approval_id, "deny");
+  $("banner-decide").classList.remove("hidden");
+}
+
+async function decideHeld(id, decision) {
+  for (const b of ["approve", "deny"]) $(b).disabled = true;
+  try {
+    const r = await fetch("/api/approvals/" + id, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }) });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+  } catch (err) {
+    narrate("Couldn't record the decision: " + err.message, "error");
+    for (const b of ["approve", "deny"]) $(b).disabled = false;
+  }
+}
+
+function onDecided(e) {
+  $("banner-decide").classList.add("hidden");
+  const first = (approver || {}).first || "The approver";
+  const li = $("act-" + e.call);
+  const pill = li && li.querySelector(".pill");
+  const b = $("banner");
+  if (e.state === "done") {
+    if (pill) { pill.className = "pill ok"; pill.textContent = "✓ approved, then done"; }
+    b.className = "banner yes";
+    $("banner-icon").textContent = "✓";
+    $("banner-title").textContent = "Approved by " + first + ", then done";
+    $("banner-text").textContent = "The gateway sent exactly the request it was holding. The ask, the yes and the change are signed and on the record.";
+    $("kept").textContent = e.value ? money(e.value) : plural((e.ids || []).length, "deal");
+    $("kept-label").textContent = e.verb + "d with a person's yes";
+  } else {
+    if (pill) { pill.className = "pill no"; pill.textContent = e.state === "denied" ? "✗ denied" : "not sent"; }
+    const nobody = (e.note || "").startsWith("nobody");
+    b.className = "banner";
+    $("banner-icon").textContent = "✋";
+    $("banner-title").textContent = nobody ? "Nobody decided, so nothing happened" : first + " said no";
+    $("banner-text").textContent = "Nothing changed. The ask and the answer are on the record.";
+    for (const id of e.ids || []) { setStatus(id, "denied", "stop"); S.keptDeals.add(id); }
+    updateKept();
+  }
 }
 
 function showStopBanner(e) {
@@ -831,6 +921,7 @@ async function runLive() {
   if (busy || !chosen) return;
   if (chosen.free && !$("request").value.trim()) { narrate("Type what " + $("who").textContent + " asks first.", "error"); return; }
   setBusy(true);
+  liveRun = true;
   setMode("live", "Live · " + (info.model || "Claude") + (guarded ? "" : " · Segurai off"));
   try {
     const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -847,6 +938,8 @@ async function runLive() {
   } catch (err) {
     narrate("Couldn't run the scene: " + err.message, "error");
   } finally {
+    liveRun = false;
+    $("banner-decide").classList.add("hidden");
     setBusy(false);
     setMode("", "Ready");
     loadRecordings();
