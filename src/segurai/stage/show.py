@@ -1062,6 +1062,11 @@ def _verdict(run: Run) -> str:
     error = next((e["text"] for e in run.events if e["kind"] == "error"), None)
     if error:
         return f"failed: {error}"
+    if run.held:
+        h = run.held[0]
+        what = f"{h['verb']} {_plural(len(h['ids']), 'deal')}" + (f" worth {money(h['value'])}" if h["value"] else "")
+        return (f"the agent tried to {what} -> HELD for {APPROVER.first}'s approval "
+                f"(then denied: nobody approves during a rehearsal)")
     if run.stopped:
         s = run.stopped[0]
         what = (_lower(s["what"]) if s["mail"] else
@@ -1076,30 +1081,50 @@ def _verdict(run: Run) -> str:
 
 def rehearse(folder: str | Path = "segurai-stage", *, rounds: int = 2, model: str = DEFAULT_MODEL,
              effort: str = DEFAULT_EFFORT, brain: Any = None, out: Any = print) -> int:
-    """Run scenes 1-3 a few times with real Claude, with nobody watching, and say how each went.
+    """Run every scripted scene a few times with real Claude, with nobody watching, and say how each went.
 
-    Every run is recorded, so the ones that went well can be replayed in front
-    of an audience. Returns a process exit code.
+    Runs where something happened are recorded, so the ones that went well
+    can be replayed in front of an audience. A problem no retry can fix - no
+    API key, a rejected key - stops the rehearsal at once, rather than
+    failing every run the same way. Returns a process exit code.
     """
     stage = Stage(folder, brain=brain, model=model, effort=effort, beat=0, decision_timeout=0)
-    total, landed = 0.0, {}
+    total, landed, recorded = 0.0, {}, 0
+    scenes = [s for s in SCENES.values() if not s.free]
     try:
-        for scene in [s for s in SCENES.values() if not s.free]:
+        for scene in scenes:
             for i in range(rounds):
                 run = stage.start(scene.id, background=False)
                 cost = run.events[-1].get("cost") or 0.0
                 total += cost
-                landed[scene.number] = landed.get(scene.number, 0) + (1 if run.stopped else 0)
+                error = next((e["text"] for e in run.events if e["kind"] == "error"), None)
+                if error and _cannot_retry(error):
+                    out(f"Stopped before spending anything more: {error}")
+                    out('In PowerShell, set the key in the same window first: $env:ANTHROPIC_API_KEY = "sk-ant-..."')
+                    return 1
+                recorded += 0 if error else 1
+                # Scene 4 lands when the agent has to ask; the others when Segurai stops something.
+                hit = bool(run.held) if scene.id == "asks-permission" else bool(run.stopped)
+                landed[scene.number] = landed.get(scene.number, 0) + (1 if hit else 0)
                 out(f"Scene {scene.number} ({scene.title}), run {i + 1}: {_verdict(run)}"
                     + (f"  [${cost:.2f}]" if cost else ""))
         out("")
-        for number, count in landed.items():
-            out(f"Scene {number}: Segurai stopped something in {count} of {rounds} runs.")
-        out(f"About ${total:.2f} in Claude usage. Every run was recorded in {stage.recordings_dir}, "
+        for scene in scenes:
+            count = landed.get(scene.number, 0)
+            if scene.id == "asks-permission":
+                out(f"Scene {scene.number}: the agent had to ask first in {count} of {rounds} runs.")
+            else:
+                out(f"Scene {scene.number}: Segurai stopped something in {count} of {rounds} runs.")
+        out(f"About ${total:.2f} in Claude usage. {_plural(recorded, 'run')} recorded in {stage.recordings_dir}, "
             f"so the good ones can be played back on the stage.")
     finally:
         stage.close()
     return 0
+
+
+def _cannot_retry(error: str) -> bool:
+    """A failure every later run would hit too: missing or rejected credentials."""
+    return any(phrase in error for phrase in ("No Anthropic API key", "rejected the key"))
 
 
 def serve_stage(folder: str | Path = "segurai-stage", *, port: int = 8750, model: str = DEFAULT_MODEL,

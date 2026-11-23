@@ -535,8 +535,11 @@ def cmd_stage(args: argparse.Namespace) -> int:
         if not 1 <= args.rehearse <= 10:
             print("--rehearse takes a number from 1 to 10")
             return 2
-        print(f"Rehearsing scenes 1-3, {args.rehearse} run(s) each, with real Claude. This takes a few "
-              f"minutes and costs a few cents per run.")
+        from .stage.show import SCENES
+
+        numbers = [s.number for s in SCENES.values() if not s.free]
+        print(f"Rehearsing scenes {min(numbers)}-{max(numbers)}, {args.rehearse} run(s) each, with real Claude. "
+              f"This takes a few minutes and costs a few cents per run.")
         return rehearse(args.dir, rounds=args.rehearse, model=args.model or DEFAULT_MODEL,
                         effort=args.effort or DEFAULT_EFFORT)
     return serve_stage(args.dir, port=args.port, model=args.model or DEFAULT_MODEL,

@@ -625,3 +625,22 @@ def test_rehearsals_deny_what_nobody_is_there_to_approve(make_stage):
     run = stage.start("asks-permission", background=False)
     decided = next(e for e in run.events if e["kind"] == "decided")
     assert decided["state"] == "denied" and "change" not in kinds(run)
+
+
+def test_a_rehearsal_without_a_key_stops_at_the_first_run(tmp_path):
+    from segurai.stage.agents import StageError
+    from segurai.stage.show import rehearse
+
+    class NoKey:
+        model = "claude"
+        calls = 0
+
+        def turn(self, system, messages, tools):
+            NoKey.calls += 1
+            raise StageError("No Anthropic API key found. Set ANTHROPIC_API_KEY and restart, or play a recorded run.")
+
+    lines = []
+    assert rehearse(tmp_path / "stage", rounds=3, brain=NoKey(), out=lines.append) == 1
+    assert NoKey.calls == 1 and len(lines) == 2
+    assert lines[0].startswith("Stopped before spending anything more: No Anthropic API key")
+    assert "$env:ANTHROPIC_API_KEY" in lines[1]
